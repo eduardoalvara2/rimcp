@@ -299,6 +299,9 @@ internal static class Program
             }
         });
         Test("map layers leave out their rows when they mark nothing", CheckMapLayers);
+        Test("set_area paints the roof areas with the game's roof tools' checks, and each takes its cells out of the other", CheckRoofAreaPaint);
+        Test("growing zones count roofed cells, overhead mountain, and roofs waiting for removal", CheckRoofCounts);
+        Test("get_map_view offers exactly its layers, and set_area names both roof areas", CheckRoofSchemas);
         Test("order_pawn and designate offer exactly the kinds they handle, and queue reaches the handler", () =>
         {
             CheckOfferedKinds("order_pawn", "order", "RiMCP.Command.PawnOrderCommandService", "Orders");
@@ -3069,6 +3072,126 @@ internal static class Program
         Check((int)roofed["markedCells"] == 3 && rows.Length == 3 && rows[0] == "R???" && rows[2] == "R---", "rows run north to south: " + string.Join("|", rows));
         string[] symbols = ((Dictionary<string, object>)roofed["legend"]).Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray();
         Check(symbols.SequenceEqual(new[] { "-", "?", "R" }), "the legend lists only the symbols shown: " + string.Join(",", symbols));
+    }
+
+    // A 10x10 map made without the game, with a real roof grid and the real roof areas over their
+    // own cell grids. Painting itself (Area.Set) needs the game's path and region grids, so the
+    // checks stop at the plan, which decides every cell before anything changes.
+    private static Map RoofMap(out Area buildRoof, out Area noRoof)
+    {
+        Map map = (Map)FormatterServices.GetUninitializedObject(typeof(Map));
+        map.info = new MapInfo { Size = new IntVec3(10, 1, 10) };
+        map.cellIndices = new CellIndices(map);
+        map.roofGrid = new RoofGrid(map);
+        AreaManager manager = (AreaManager)FormatterServices.GetUninitializedObject(typeof(AreaManager));
+        manager.map = map;
+        buildRoof = RoofArea(typeof(Area_BuildRoof), manager);
+        noRoof = RoofArea(typeof(Area_NoRoof), manager);
+        typeof(AreaManager).GetField("areas", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(manager, new List<Area> { buildRoof, noRoof });
+        map.areaManager = manager;
+        return map;
+    }
+
+    private static Area RoofArea(Type type, AreaManager manager)
+    {
+        Area area = (Area)FormatterServices.GetUninitializedObject(type);
+        area.areaManager = manager;
+        typeof(Area).GetField("innerGrid", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(area, new BoolGrid(manager.map));
+        return area;
+    }
+
+    private static void SetRoof(Map map, int x, int z, RoofDef roof)
+    {
+        RoofDef[] grid = (RoofDef[])typeof(RoofGrid).GetField("roofGrid", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(map.roofGrid);
+        grid[map.cellIndices.CellToIndex(new IntVec3(x, 0, z))] = roof;
+    }
+
+    private static RoofDef ThickRoof()
+    {
+        return new RoofDef { defName = "RegressionThickRoof", isThickRoof = true, isNatural = true };
+    }
+
+    private static RoofDef BuiltRoof()
+    {
+        return new RoofDef { defName = "RegressionBuiltRoof" };
+    }
+
+    private static void CheckRoofAreaPaint()
+    {
+        Area buildRoof, noRoof;
+        Map map = RoofMap(out buildRoof, out noRoof);
+        // Along z = 0: (0, 0) unexplored, (1, 0) under overhead mountain, (2, 0) built roof in the
+        // build-roof area, (3, 0) built roof in the no-roof area, (4, 0) open sky in neither.
+        SetRoof(map, 1, 0, ThickRoof());
+        SetRoof(map, 2, 0, BuiltRoof());
+        SetRoof(map, 3, 0, BuiltRoof());
+        buildRoof.InnerGrid[new IntVec3(2, 0, 0)] = true;
+        noRoof.InnerGrid[new IntVec3(3, 0, 0)] = true;
+        Type roofAreas = mod.GetType("RiMCP.Command.RoofAreas", true);
+        MethodInfo plan = roofAreas.GetMethod("Plan", Static);
+        Func<IntVec3, bool> fogged = cell => cell.x == 0 && cell.z == 0;
+        List<IntVec3> row = Enumerable.Range(0, 5).Select(x => new IntVec3(x, 0, 0)).ToList();
+        Func<Area, bool, object> paint = (area, add) => plan.Invoke(null, new object[] { map, area, row, 0, add, fogged });
+        Func<object, Dictionary<string, object>> dto = planned => (Dictionary<string, object>)planned.GetType().GetMethod("ToDto").Invoke(planned, null);
+        Func<object, string> painted = planned => string.Join(" ", Field<List<IntVec3>>(planned, "Cells").Select(cell => cell.x.ToString()).ToArray());
+
+        object removing = paint(noRoof, true);
+        Dictionary<string, object> removal = dto(removing);
+        string[] reasons = ((object[])removal["rejected"]).Cast<Dictionary<string, object>>().Select(rejected => (string)rejected["reason"]).ToArray();
+        Check(painted(removing) == "2 4" && (int)removal["applied"] == 2 && (int)removal["alreadySatisfied"] == 1 && (int)removal["rejectedCount"] == 2,
+            "noRoof paints explored cells without a thick roof that are not in it yet: painted " + painted(removing));
+        Check(reasons.Length == 2 && reasons[0] == "Unexplored." && reasons[1].StartsWith("Overhead mountain"), "noRoof refuses unexplored cells and overhead mountain: " + string.Join(" | ", reasons));
+        Check((int)removal["roofsToRemove"] == 1 && (int)removal["takenFromBuildRoof"] == 1, "one painted cell has a roof to remove and was in the build-roof area");
+
+        object building = paint(buildRoof, true);
+        Dictionary<string, object> build = dto(building);
+        Check(painted(building) == "1 3 4" && (int)build["alreadySatisfied"] == 1 && (int)build["rejectedCount"] == 1,
+            "buildRoof paints every explored cell not in it yet, overhead mountain too, as its tool does: painted " + painted(building));
+        Check((int)build["roofsToBuild"] == 1 && (int)build["takenFromNoRoof"] == 1, "one painted cell has no roof yet and one leaves the no-roof area");
+        Check(ReferenceEquals(Field<object>(building, "Other"), noRoof) && ReferenceEquals(Field<object>(removing, "Other"), buildRoof), "each roof area clears the other");
+
+        object clearing = paint(noRoof, false);
+        Dictionary<string, object> clear = dto(clearing);
+        Check(painted(clearing) == "3" && (int)clear["alreadySatisfied"] == 3 && (int)clear["rejectedCount"] == 1 && !clear.ContainsKey("roofsToRemove"),
+            "removing takes out only the area's explored cells, with no roof work: painted " + painted(clearing));
+
+        MethodInfo named = roofAreas.GetMethod("Named", Static);
+        Check(ReferenceEquals(named.Invoke(null, new object[] { map, "NOROOF" }), noRoof) && ReferenceEquals(named.Invoke(null, new object[] { map, "buildRoof" }), buildRoof) && named.Invoke(null, new object[] { map, "home" }) == null,
+            "set_area finds the roof areas by name, in any case");
+        Check((string)roofAreas.GetMethod("Id", Static).Invoke(null, new object[] { noRoof }) == "noRoof", "a roof area reads back by its set_area name");
+
+        Type service = mod.GetType("RiMCP.Read.MapViewReadService", true);
+        object layer = ((Array)service.GetField("Layers", Static).GetValue(null)).Cast<object>().Single(each => Field<string>(each, "Name") == "roofAreas");
+        Func<IntVec3, Map, char> symbol = Field<Func<IntVec3, Map, char>>(layer, "Symbol");
+        string shown = new string(row.Select(cell => symbol(cell, map)).ToArray());
+        Check(shown == "--BN-", "the roofAreas layer shows the build-roof and no-roof areas: " + shown);
+    }
+
+    private static void CheckRoofCounts()
+    {
+        Area buildRoof, noRoof;
+        Map map = RoofMap(out buildRoof, out noRoof);
+        // Along z = 1: overhead mountain, a built roof, a built roof in the no-roof area, open sky in
+        // the no-roof area, and open sky.
+        SetRoof(map, 0, 1, ThickRoof());
+        SetRoof(map, 1, 1, BuiltRoof());
+        SetRoof(map, 2, 1, BuiltRoof());
+        noRoof.InnerGrid[new IntVec3(2, 0, 1)] = true;
+        noRoof.InnerGrid[new IntVec3(3, 0, 1)] = true;
+        object[] args = { map, Enumerable.Range(0, 5).Select(x => new IntVec3(x, 0, 1)).ToList(), 0, 0, 0 };
+        mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("CountRoofs", Static).Invoke(null, args);
+        Check((int)args[2] == 3 && (int)args[3] == 1 && (int)args[4] == 1,
+            "roofed " + args[2] + ", thick " + args[3] + ", queued for removal " + args[4] + "; expected 3, 1 and 1");
+    }
+
+    private static void CheckRoofSchemas()
+    {
+        var layers = (Dictionary<string, object>)ToolProperties(Tool("get_map_view"))["layers"];
+        string[] offered = (string[])((Dictionary<string, object>)layers["items"])["enum"];
+        string[] handled = ((Array)mod.GetType("RiMCP.Read.MapViewReadService", true).GetField("Layers", Static).GetValue(null)).Cast<object>().Select(layer => Field<string>(layer, "Name")).ToArray();
+        Check(offered.OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(handled.OrderBy(name => name, StringComparer.Ordinal)), "get_map_view offers " + string.Join(", ", offered) + " but draws " + string.Join(", ", handled));
+        string areaId = (string)((Dictionary<string, object>)ToolProperties(Tool("set_area"))["areaId"])["description"];
+        Check(new[] { "\"noRoof\"", "\"buildRoof\"", "\"home\"" }.All(areaId.Contains), "set_area's areaId must name the areas it takes by name: " + areaId);
     }
 
     private static void ExpectCommandError(int status, Action action)

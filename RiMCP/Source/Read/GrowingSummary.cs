@@ -11,6 +11,7 @@ namespace RiMCP.Read
     // (sowableCells), where it is already planted (sown, harvestable, averageGrowth), and whether
     // those plants are growing (notGrowing, with the reasons the plant's inspect pane gives).
     // Blockers say what stops the zone: no cell to plant, the wrong season, or nobody to sow.
+    // roofedCells says how much of the zone a roof keeps from the sun (CountRoofs).
     internal static class GrowingSummary
     {
         // The game's own answers, which it keeps protected. GrowthPerTick is what a plant grows
@@ -64,6 +65,9 @@ namespace RiMCP.Read
                 }
             }
 
+            int roofed, thickRoofed, roofRemovalQueued;
+            CountRoofs(map, zone.Cells, out roofed, out thickRoofed, out roofRemovalQueued);
+
             List<object> blockers = new List<object>();
             if (zone.Cells.Count > 0 && sown == 0 && sowable == 0)
             {
@@ -93,7 +97,38 @@ namespace RiMCP.Read
                     Dto.Field("tooDark", tooDark > 0 ? (object)tooDark : null),
                     Dto.Field("temperature", temperature > 0 ? (object)temperature : null),
                     Dto.Field("other", other > 0 ? (object)other : null))),
+                Dto.Field("roofedCells", roofed),
+                Dto.Field("thickRoofedCells", thickRoofed > 0 ? (object)thickRoofed : null),
+                Dto.Field("roofRemovalQueued", roofRemovalQueued > 0 ? (object)roofRemovalQueued : null),
                 Dto.Field("blockers", Blockers.ToArray(blockers)));
+        }
+
+        // Roofed cells get no sunlight, only lamps' light (GlowGrid.GroundGlowAt), so a crop there
+        // grows only under a sun lamp. Thick roofs are overhead mountain, which nothing can remove;
+        // a roofed cell in the no-roof area waits for a colonist with Construction to remove its roof.
+        public static void CountRoofs(Map map, IEnumerable<IntVec3> cells, out int roofed, out int thick, out int removalQueued)
+        {
+            roofed = 0;
+            thick = 0;
+            removalQueued = 0;
+            Area_NoRoof noRoof = map.areaManager.NoRoof;
+            foreach (IntVec3 cell in cells)
+            {
+                RoofDef roof = map.roofGrid.RoofAt(cell);
+                if (roof == null)
+                {
+                    continue;
+                }
+                roofed++;
+                if (roof.isThickRoof)
+                {
+                    thick++;
+                }
+                else if (noRoof != null && noRoof[cell])
+                {
+                    removalQueued++;
+                }
+            }
         }
 
         private static Func<Plant, T> Getter<T>(string name)

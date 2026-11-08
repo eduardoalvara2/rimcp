@@ -58,6 +58,12 @@ namespace RiMCP.Read
                 { 'u', "haul" },
                 { 'o', "other order" },
                 { '-', "no order" }
+            }),
+            new Layer("roofAreas", RoofAreaSymbol, '-', new Dictionary<char, string>
+            {
+                { 'B', "build roof area: colonists build a roof here" },
+                { 'N', "no-roof area: colonists remove the roof here" },
+                { '-', "neither roof area" }
             })
         };
 
@@ -296,6 +302,12 @@ namespace RiMCP.Read
         {
             RoofDef roof = map.roofGrid.RoofAt(cell);
             return roof == null ? '-' : roof.isThickRoof ? 'R' : roof.isNatural ? 'r' : 'b';
+        }
+
+        // The roof areas set_area paints, as the game's roof overlay shows them.
+        private static char RoofAreaSymbol(IntVec3 cell, Map map)
+        {
+            return map.areaManager.NoRoof[cell] ? 'N' : map.areaManager.BuildRoof[cell] ? 'B' : '-';
         }
 
         private static int Size(ReadRequest query, string field)

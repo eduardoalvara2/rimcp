@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.0+rimplayer.4 (rimplayer fork) - 2026-11-08
+
+### Added
+
+- `set_area` paints the game's two roof areas: `areaId` `noRoof` (colonists with Construction remove the roofs over its cells, and the game stops roofing them by itself when a room is closed) and `buildRoof` (colonists build roofs there). Their `list_zones` ids work too. RimWorld keeps roofs as these areas, painted by its Remove roof, Build roof and Ignore roof area tools, not as designations, so they belong to `set_area` rather than `designate`. `add` follows the matching tool: unexplored cells are refused, `noRoof` refuses overhead mountain (`Overhead mountain: nothing can remove a thick rock roof.`), and cells already in the area are `alreadySatisfied`; each takes the cells it paints out of the other area, as the game's tools do. `remove` takes cells out of the named area only, as the Ignore roof area tool does for both, and refuses unexplored cells as it does. `added` also reports, for `noRoof`, `roofsToRemove` (painted cells under a roof) and `takenFromBuildRoof`, and for `buildRoof`, `roofsToBuild` (painted cells with no roof yet, which colonists roof where a wall or column within 6.9 cells holds it) and `takenFromNoRoof`. The roof areas cannot be renamed, deleted or created, and the other areas, such as snow clearing, stay refused.
+- Growing zones (`list_zones`, `get_zone`, and `set_growing_zone`'s answer) count `roofedCells`, the zone's cells under any roof: a roof keeps out the sun, so a crop there grows only under a sun lamp. `thickRoofedCells` counts those under overhead mountain, which nothing can remove, and `roofRemovalQueued` the roofed cells already in the no-roof area, waiting for a colonist to remove their roof; both are left out when there are none.
+- `get_map_view` has a `roofAreas` layer: `B` for the build-roof area, `N` for the no-roof area, as the game's roof overlay shows them. The `roof` layer still shows the roofs themselves.
+- Not yet tried in game: painting the roof areas on a live map. The regression suite checks every cell rule and the roof counts on a map made without the game, with real roof grids and roof areas; writing the cells needs the game's path and region grids.
+
 ## 1.1.0+rimplayer.3 (rimplayer fork) - 2026-11-08
 
 ### Added

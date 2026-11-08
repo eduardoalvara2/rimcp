@@ -438,8 +438,8 @@ namespace RiMCP.Command
                 : crop.LabelCap + " cannot be sown on this map.";
         }
 
-        // The Home area and allowed areas. Other areas, such as the roof areas, have rules of their
-        // own that only their designators apply, so they are not editable here.
+        // The Home area, allowed areas, and the roof areas, which follow their tools' rules
+        // (RoofAreas). The other areas, such as snow clearing, are not editable here.
         public static BridgeResponse SetArea(BridgeRequest request, RouteMatch route)
         {
             SetAreaBody body = CommandUtil.ReadBody<SetAreaBody>(request);
@@ -468,14 +468,15 @@ namespace RiMCP.Command
                 string areaId = body.AreaId.Trim();
                 area = string.Equals(areaId, "home", StringComparison.OrdinalIgnoreCase)
                     ? map.areaManager.Home
-                    : map.areaManager.AllAreas.FirstOrDefault(candidate => PawnReadService.AllowedAreaId(candidate, map) == areaId || candidate.ID.ToString() == areaId);
+                    : RoofAreas.Named(map, areaId)
+                        ?? map.areaManager.AllAreas.FirstOrDefault(candidate => PawnReadService.AllowedAreaId(candidate, map) == areaId || candidate.ID.ToString() == areaId);
                 if (area == null)
                 {
-                    throw new CommandException(404, "Area not found. Use \"home\" or an area id from list_zones.");
+                    throw new CommandException(404, "Area not found. Use \"home\", \"" + RoofAreas.BuildRoofId + "\", \"" + RoofAreas.NoRoofId + "\", or an area id from list_zones.");
                 }
-                if (!(area is Area_Home) && !(area is Area_Allowed))
+                if (!(area is Area_Home) && !(area is Area_Allowed) && !RoofAreas.Is(area))
                 {
-                    throw new CommandException(409, area.Label + " cannot be edited here: set_area edits only the Home area and allowed areas.");
+                    throw new CommandException(409, area.Label + " cannot be edited here: set_area edits only the Home area, allowed areas, and the roof areas.");
                 }
                 if (body.Delete == true && (body.Add != null || body.Remove != null || label != null))
                 {
@@ -523,6 +524,20 @@ namespace RiMCP.Command
                     area.RenamableLabel = label;
                 }
 
+                if (RoofAreas.Is(area))
+                {
+                    // Cells are added before others are removed, as for the other areas, so a cell
+                    // in both lists ends outside the area.
+                    RoofPaint roofAdded = RoofAreas.Plan(map, area, addCells, addOutside, true, cell => cell.Fogged(map));
+                    RoofAreas.Apply(roofAdded);
+                    RoofPaint roofRemoved = RoofAreas.Plan(map, area, removeCells, removeOutside, false, cell => cell.Fogged(map));
+                    RoofAreas.Apply(roofRemoved);
+                    return new CommandResult(roofAdded.Outcomes.Applied > 0 || roofRemoved.Outcomes.Applied > 0, Dto.Obj(
+                        Dto.Field("area", SerializeArea(map, area)),
+                        Dto.Field("created", false),
+                        Dto.Field("added", body.Add == null ? null : roofAdded.ToDto()),
+                        Dto.Field("removed", body.Remove == null ? null : roofRemoved.ToDto())));
+                }
                 CellOutcomes added = SetCells(area, addCells, addOutside, true);
                 CellOutcomes removed = SetCells(area, removeCells, removeOutside, false);
                 Dictionary<string, object> data = Dto.Obj(
@@ -607,7 +622,7 @@ namespace RiMCP.Command
         private static object SerializeArea(Map map, Area area)
         {
             return Dto.Obj(
-                Dto.Field("id", area is Area_Home ? "home" : PawnReadService.AllowedAreaId(area, map)),
+                Dto.Field("id", area is Area_Home ? "home" : RoofAreas.Id(area) ?? PawnReadService.AllowedAreaId(area, map)),
                 Dto.Field("label", area.Label),
                 Dto.Field("cellCount", area.TrueCount));
         }
