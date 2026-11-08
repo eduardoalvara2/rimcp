@@ -6,6 +6,8 @@ using RimWorld;
 using RiMCP.Bridge;
 using RiMCP.Read;
 using Verse;
+using Verse.AI;
+using Verse.AI.Group;
 
 namespace RiMCP.Command
 {
@@ -84,8 +86,24 @@ namespace RiMCP.Command
             }
 
             HashSet<int> known = new HashSet<int>(Find.LetterStack.LettersListForReading.Select(letter => letter.ID));
+            HashSet<int> knownPawns = new HashSet<int>(map.mapPawns.AllPawnsSpawned.Select(pawn => pawn.thingIDNumber));
             bool fired = worker.TryExecute(parms);
+            bool recovered = false;
+            List<Pawn> arrived = map.mapPawns.AllPawnsSpawned.Where(pawn => !knownPawns.Contains(pawn.thingIDNumber)).ToList();
+            // The game sends the caravan's letter and spawns its pawns before it looks for the spot they wait
+            // at, and gives up, leaving them without a lord, when it finds none (a young colony has few
+            // buildings). Give them that lord at a spot of ours, as the game would have.
+            if (!fired && incident == TraderCaravan)
+            {
+                recovered = TryRecoverCaravan(map, parms.faction, arrived);
+                fired = recovered;
+            }
             List<object> letters = Find.LetterStack.LettersListForReading.Where(letter => !known.Contains(letter.ID)).Select(SerializeLetter).ToList();
+            List<object> traders = arrived.Where(pawn => pawn.Spawned && pawn.TraderKind != null).Select(pawn => (object)pawn.ThingID).ToList();
+            if (fired && (incident == TraderCaravan) && traders.Count == 0)
+            {
+                fired = false;
+            }
             if (fired)
             {
                 FollowUps.Announce("fired the test incident " + incident + ".");
@@ -101,8 +119,30 @@ namespace RiMCP.Command
                 Dto.Field("traderKind", parms.traderKind == null ? null : parms.traderKind.defName),
                 Dto.Field("letter", letters.Count == 0 ? null : letters[0]),
                 Dto.Field("letters", letters.Count > 1 ? letters.ToArray() : null),
-                Dto.Field("reason", fired ? null : "The game could not set the incident up (for example no faction could send it, or the points were too low for any group)."));
+                Dto.Field("arrivedPawns", arrived.Count == 0 ? null : (object)arrived.Count),
+                Dto.Field("traderIds", traders.Count == 0 ? null : traders.ToArray()),
+                Dto.Field("recoveredLord", recovered ? (object)true : null),
+                Dto.Field("reason", fired ? null : "The game could not set the incident up (for example no faction could send it, or the points were too low for any group)." + (letters.Count == 0 ? "" : " It sent its letter before giving up, so the letter below announces nothing that is on the map.")));
             return new CommandResult(fired, data);
+        }
+
+        // Gives a caravan the game spawned but left without a lord a lord of its own: the trade-with-colony
+        // job, waiting near the colonists.
+        private static bool TryRecoverCaravan(Map map, Faction faction, List<Pawn> arrived)
+        {
+            List<Pawn> group = arrived.Where(pawn => pawn.Spawned && !pawn.Dead && pawn.Faction == faction && pawn.GetLord() == null).ToList();
+            Pawn colonist = map.mapPawns.FreeColonistsSpawned.FirstOrDefault();
+            if (group.Count == 0 || colonist == null || !group.Any(pawn => pawn.TraderKind != null))
+            {
+                return false;
+            }
+            IntVec3 spot;
+            if (!CellFinder.TryFindRandomCellNear(colonist.Position, map, 12, cell => cell.Standable(map) && !cell.Fogged(map) && group.All(pawn => pawn.CanReach(cell, PathEndMode.OnCell, Danger.Deadly)), out spot, 100))
+            {
+                return false;
+            }
+            LordMaker.MakeNewLord(faction, new LordJob_TradeWithColony(faction, spot), map, group);
+            return true;
         }
 
         private static object SerializeLetter(Letter letter)
