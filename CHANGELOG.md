@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased (rimplayer fork)
+
+A fork of RimMCP 1.1.0 at `eduardoalvara2/rimcp`, branch `rimplayer`, for the rimplayer project. It keeps the package id `rakanssh.rimcp`, so saves keep matching, and the mod version `1.1.0`; the mod list names it RimMCP (rimplayer fork) to tell it from the Workshop copy.
+
+### Added
+
+- `list_dialogs` lists every window that pauses the game, and every dialog. Only one the game opened on its own, such as a scenario's intro or a mod's notice, is the agents': if RimMCP can read it, it gets an interactionId for `answer_dialog`, answered under `dismiss_dialog`'s access, so only with Decisions on, and otherwise, for a mod's window such as an update notice, `dismiss_dialog` closes it as its close button does, where it has one (a repeat is alreadySatisfied). Windows that appear just after the player clicks or presses a key, such as a psycast's confirmation, the player's own windows and anything opened over those that pause the game (a save list's delete confirmation, the options, mod settings, trade, caravan forming, a bill's settings, the main menu), confirmations of something that cannot be undone, comms console calls, dialogs an agent's call opened that were then left to the player, and the game's questions during an operation, such as approving a new colony, are listed as the player's, with the reason. RimMCP's own windows are not listed, and a dialog that cannot be read is listed with the error instead of failing the list.
+- `list_surgeries` lists the operations a pawn's Health tab offers, with the same recipes, body parts and disabled options, and the operations queued; `add_surgery_bill` queues one as clicking it does, asking first where the game does (`answer_dialog`), and warns when no doctor has the skills or there is no medical bed.
+- `get_mechanitor` shows a mechanitor's bandwidth, control groups with their work modes and mechs, and mechs beyond the bandwidth; `set_mech_control` moves overseen mechs into a group and sets its work mode, as the Mechs tab and control group buttons do.
+- `scripts/build-local.ps1` builds the DLL and the proxy on Windows, installing the .NET 8 SDK and Rust for the current user if missing, runs the regression suite with `-Test`, and installs a local copy of the mod with `-Install`: staged next to `Mods\RiMCP` and swapped in, so a failure leaves the previous copy whole, and refused while RimWorld or a program from the copy, such as its MCP proxy, runs, and when the copy is or holds a link.
+
+### Changed
+
+- `advance_time` is refused while a window pauses the game, naming it and whether it is the player's, instead of sitting at its first tick; `get_advance` lists the windows holding time as `time.heldByWindows`, RimMCP's own marked `RimMCP:`.
+- A dialog that can no longer be read is left to the player instead of failing every read, and a mod's dialog read again stays a mod's for the Safety setting.
+
 ## [1.1.0] - 2026-10-18
 
 ### Added
