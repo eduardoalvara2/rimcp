@@ -81,7 +81,7 @@ namespace RiMCP.Command
             { "FloatMenuOptionProvider_Romance", null },
             { "FloatMenuOptionProvider_StartRitual", RitualWindow },
             { "FloatMenuOptionProvider_Strip", null },
-            { "FloatMenuOptionProvider_Trade", "Trading opens the trade window when the pawn reaches the trader; agents cannot trade yet." },
+            { "FloatMenuOptionProvider_Trade", "Trading opens the trade window when the pawn reaches the trader; agents trade with list_traders, get_trade and execute_trade instead, which use the game's trade session without a window." },
             { "FloatMenuOptionProvider_TransferEntity", "It asks for a holding platform, which RimMCP cannot check first yet." },
             { "FloatMenuOptionProvider_Wear", null },
             { "FloatMenuOptionProvider_WorkGivers", null },
@@ -95,7 +95,7 @@ namespace RiMCP.Command
             { "Building_CommsConsole", thing => CommsConsole },
             { "Faction", thing => CommsConsole },
             { "PassingShip", thing => CommsConsole },
-            { "TradeShip", thing => CommsConsole },
+            { "TradeShip", thing => TradeShipCall },
             { "Building_StylingStation", thing => "The styling station opens its window when the pawn reaches it; agents cannot use it yet." },
             { "CompPilotConsole", thing => "Piloting opens the gravship's controls when the pawn reaches the console; agents cannot pilot yet." },
             { "Building_VoidMonolith", thing => Find.Anomaly != null && Find.Anomaly.Level > 0 ? "Activating the monolith asks for confirmation when the pawn reaches it; agents cannot answer that yet." : null },
@@ -107,6 +107,8 @@ namespace RiMCP.Command
             { "CompNociosphere", thing => AsksTarget },
             { "CompPushable", thing => AsksTarget }
         };
+
+        private const string TradeShipCall = "A call to a trade ship opens the trade window when the pawn reaches the comms console; agents trade with list_traders, get_trade and execute_trade instead, which use the game's trade session without a window.";
 
         private const string CommsConsole = "The comms console opens its conversation when the pawn reaches it; agents cannot use it yet.";
 

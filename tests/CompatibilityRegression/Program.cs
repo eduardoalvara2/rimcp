@@ -227,7 +227,7 @@ internal static class Program
         {
             IEnumerable tools = (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null);
             Dictionary<string, int> counts = tools.Cast<object>().GroupBy(tool => Field<string>(tool, "Group") ?? "(none)").ToDictionary(group => group.Key, group => group.Count());
-            var expected = new Dictionary<string, int> { { "observe", 41 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 3 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 1 }, { "gameSetup", 14 } };
+            var expected = new Dictionary<string, int> { { "observe", 43 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 4 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 1 }, { "gameSetup", 14 } };
             int count;
             Check(counts.Count == expected.Count && expected.All(pair => counts.TryGetValue(pair.Key, out count) && count == pair.Value),
                 "group sizes: " + string.Join(", ", counts.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
@@ -302,6 +302,10 @@ internal static class Program
         Test("set_area paints the roof areas with the game's roof tools' checks, and each takes its cells out of the other", CheckRoofAreaPaint);
         Test("growing zones count roofed cells, overhead mountain, and roofs waiting for removal", CheckRoofCounts);
         Test("get_map_view offers exactly its layers, and set_area names both roof areas", CheckRoofSchemas);
+        Test("the trade tools reach their handlers on their routes and groups, and document the tradeable key", CheckTradeTools);
+        Test("trade tools refuse bad input before anything runs, and each needs a loaded game", CheckTradeInputs);
+        Test("tradeable keys are def, stuff and quality, numbered by hit points, and stay the same in a freshly built deal", CheckTradeKeys);
+        Test("the Trade option and the trade ship call point to the trade tools instead of refusing", CheckTradeRefusalsPointToTools);
         Test("order_pawn and designate offer exactly the kinds they handle, and queue reaches the handler", () =>
         {
             CheckOfferedKinds("order_pawn", "order", "RiMCP.Command.PawnOrderCommandService", "Orders");
@@ -2036,7 +2040,7 @@ internal static class Program
         Check(isOn("load_game") && list("ToolsOn").Count == 0, "turning its group on drops the group's exceptions");
         group("gameSettings", true);
         Check(current() == "full", "choices that amount to a preset are that preset");
-        foreach (string name in new[] { "designate", "designate_animal", "place_blueprint" })
+        foreach (string name in new[] { "designate", "designate_animal", "place_blueprint", "execute_trade" })
         {
             tool(name, false);
         }
@@ -3192,6 +3196,188 @@ internal static class Program
         Check(offered.OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(handled.OrderBy(name => name, StringComparer.Ordinal)), "get_map_view offers " + string.Join(", ", offered) + " but draws " + string.Join(", ", handled));
         string areaId = (string)((Dictionary<string, object>)ToolProperties(Tool("set_area"))["areaId"])["description"];
         Check(new[] { "\"noRoof\"", "\"buildRoof\"", "\"home\"" }.All(areaId.Contains), "set_area's areaId must name the areas it takes by name: " + areaId);
+    }
+
+    // list_traders, get_trade and execute_trade: routes, groups, schemas, and the key format.
+    private static void CheckTradeTools()
+    {
+        IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
+        var expected = new[]
+        {
+            new[] { "list_traders", "traders", "observe", "GET", "/v1/traders", "TradeReadService.ListTraders" },
+            new[] { "get_trade", "trade", "observe", "GET", "/v1/trade", "TradeReadService.GetTrade" },
+            new[] { "execute_trade", "execute-trade", "orders", "POST", "/v1/trade", "TradeCommandService.ExecuteTrade" }
+        };
+        foreach (string[] row in expected)
+        {
+            object spec = Tool(row[0]);
+            Check(Field<string>(spec, "HandlerId") == row[1] && Field<string>(spec, "Group") == row[2] && Field<string>(spec, "Method") == row[3] && Field<string>(spec, "PathTemplate") == row[4],
+                row[0] + " is " + Field<string>(spec, "HandlerId") + " in " + Field<string>(spec, "Group") + " at " + Field<string>(spec, "Method") + " " + Field<string>(spec, "PathTemplate"));
+            Delegate handler = handlers[row[1]] as Delegate;
+            Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == row[5], row[0] + " must be handled by " + row[5]);
+        }
+        Check(Field<string[]>(Tool("execute_trade"), "BodyKeys").SequenceEqual(new[] { "mapId", "traderId", "negotiatorId", "buy", "sell", "requestId", "expectedLoadId" }), "execute_trade sends its fields in the body, with the load guard");
+        Check(ToolProperties(Tool("execute_trade")).ContainsKey("expectedLoadId"), "execute_trade takes expectedLoadId");
+        Check(new[] { "traderId", "negotiatorId", "query", "def" }.All(Field<string[]>(Tool("get_trade"), "QueryKeys").Contains), "get_trade reads its filters from the query");
+
+        Func<string, string[]> required = name => (string[])Field<Dictionary<string, object>>(Tool(name), "InputSchema")["required"];
+        Check(required("get_trade").SequenceEqual(new[] { "traderId" }), "get_trade needs a trader");
+        Check(required("execute_trade").SequenceEqual(new[] { "traderId", "negotiatorId" }), "execute_trade needs a trader and a negotiator");
+        foreach (string side in new[] { "buy", "sell" })
+        {
+            var items = (Dictionary<string, object>)((Dictionary<string, object>)ToolProperties(Tool("execute_trade"))[side])["items"];
+            Check(((object[])items["required"]).Cast<string>().SequenceEqual(new[] { "key", "count" }), "each " + side + " item needs a key and a count");
+        }
+
+        // The key format is documented where keys are read and where they are used.
+        foreach (string name in new[] { "get_trade", "execute_trade" })
+        {
+            string description = Field<string>(Tool(name), "Description");
+            Check(description.Contains("def[:stuff][@quality]") && description.Contains("pawn:<thingId>"), name + " documents the tradeable key");
+        }
+        Check(Field<string>(Tool("execute_trade"), "Description").Contains("Shown in game"), "execute_trade says it is shown in game");
+        Func<string, bool> readOnly = name => (bool)Field<Dictionary<string, object>>(Tool(name), "Annotations")["readOnlyHint"];
+        Check(readOnly("list_traders") && readOnly("get_trade") && !readOnly("execute_trade"), "the trade reads are reads and the deal is a write");
+    }
+
+    private static void CheckTradeInputs()
+    {
+        Func<string, object> execute = body => Invoke("RiMCP.Command.TradeCommandService", "ExecuteTrade", Request("/v1/trade", "POST", body), Route());
+        string line = "{\"key\":\"Steel\",\"count\":5}";
+        string ids = "\"traderId\":\"Human1\",\"negotiatorId\":\"Human2\"";
+        ExpectCommandError(400, () => execute("{}"));
+        ExpectCommandError(400, () => execute("{\"traderId\":\"Human1\",\"buy\":[" + line + "]}"));
+        ExpectCommandError(400, () => execute("{\"negotiatorId\":\"Human2\",\"buy\":[" + line + "]}"));
+        ExpectCommandError(400, () => execute("{" + ids + "}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[],\"sell\":[]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[{\"key\":\"Steel\"}]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[{\"key\":\"Steel\",\"count\":0}]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"sell\":[{\"key\":\"Steel\",\"count\":-3}]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"sell\":[{\"key\":\"Steel\",\"count\":1000001}]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[{\"key\":\" \",\"count\":1}]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[" + line + "," + line + "]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[" + line + "],\"sell\":[" + line + "]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[" + string.Join(",", Enumerable.Range(0, 51).Select(i => "{\"key\":\"Item" + i + "\",\"count\":1}").ToArray()) + "]}"));
+        ExpectCommandError(400, () => execute("{" + ids + ",\"buy\":[" + line + "],\"requestId\":\"" + new string('x', 101) + "\"}"));
+        // Input that passes is turned away only for lack of a loaded game, before anything runs.
+        ExpectCommandError(409, () => execute("{" + ids + ",\"buy\":[" + line + "],\"sell\":[{\"key\":\"Gold\",\"count\":2}],\"requestId\":\"deal-1\"}"));
+
+        ExpectBridgeError(400, () => Invoke("RiMCP.Read.TradeReadService", "GetTrade", Request("/v1/trade"), Route()));
+        ExpectBridgeError(400, () => Invoke("RiMCP.Read.TradeReadService", "GetTrade", Request("/v1/trade?negotiatorId=Human2"), Route()));
+        ExpectBridgeError(409, () => Invoke("RiMCP.Read.TradeReadService", "GetTrade", Request("/v1/trade?traderId=Human1&query=steel&limit=5"), Route()));
+        ExpectBridgeError(409, () => Invoke("RiMCP.Read.TradeReadService", "ListTraders", Request("/v1/traders"), Route()));
+    }
+
+    private static ThingWithComps TradeThing(string defName, int id, int count, int hitPoints, string stuff = null, QualityCategory? quality = null)
+    {
+        const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
+        ThingWithComps thing = (ThingWithComps)FormatterServices.GetUninitializedObject(typeof(ThingWithComps));
+        thing.def = NamedDef(defName);
+        thing.thingIDNumber = id;
+        thing.stackCount = count;
+        typeof(Thing).GetField("hitPointsInt", Fields).SetValue(thing, hitPoints);
+        if (stuff != null)
+        {
+            typeof(Thing).GetField("stuffInt", Fields).SetValue(thing, NamedDef(stuff));
+        }
+        if (quality.HasValue)
+        {
+            CompQuality comp = (CompQuality)FormatterServices.GetUninitializedObject(typeof(CompQuality));
+            typeof(CompQuality).GetField("qualityInt", Fields).SetValue(comp, quality.Value);
+            thing.compQuality = comp;
+        }
+        return thing;
+    }
+
+    // A ThingDef made without its constructor, which needs the game's graphics.
+    private static ThingDef NamedDef(string defName)
+    {
+        ThingDef def = Blank<ThingDef>();
+        def.defName = defName;
+        return def;
+    }
+
+    private static Tradeable Tradeables(Thing[] colony, Thing[] trader)
+    {
+        Tradeable tradeable = new Tradeable();
+        tradeable.thingsColony.AddRange(colony);
+        tradeable.thingsTrader.AddRange(trader);
+        return tradeable;
+    }
+
+    private static TradeDeal DealOf(IEnumerable<Tradeable> tradeables)
+    {
+        TradeDeal deal = (TradeDeal)FormatterServices.GetUninitializedObject(typeof(TradeDeal));
+        typeof(TradeDeal).GetField("tradeables", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(deal, tradeables.ToList());
+        return deal;
+    }
+
+    // The game builds its tradeables again every session, so the keys must come out the same from
+    // fresh objects, whatever order the goods come in.
+    private static void CheckTradeKeys()
+    {
+        Func<bool, Dictionary<string, int>> keysOf = reversed =>
+        {
+            var built = new List<Tradeable>
+            {
+                Tradeables(new Thing[] { TradeThing("Steel", 1, 100, -1) }, new Thing[] { TradeThing("Steel", 2, 200, -1) }),
+                Tradeables(new Thing[0], new Thing[] { TradeThing("Apparel_Parka", 3, 1, 80, "Leather_Wolf", QualityCategory.Good) }),
+                Tradeables(new Thing[0], new Thing[] { TradeThing("Apparel_Parka", 4, 1, 80, "Leather_Wolf", QualityCategory.Normal) }),
+                Tradeables(new Thing[] { TradeThing("MeleeWeapon_LongSword", 5, 1, 40, "Steel", QualityCategory.Normal) }, new Thing[0]),
+                Tradeables(new Thing[0], new Thing[] { TradeThing("MeleeWeapon_LongSword", 6, 1, 90, "Steel", QualityCategory.Normal) }),
+                Tradeables(new Thing[0], new Thing[] { TradeThing("Gold", 7, 30, -1) })
+            };
+            if (reversed)
+            {
+                built.Reverse();
+            }
+            IList rows = (IList)Invoke("RiMCP.Read.TradeSupport", "Rows", DealOf(built));
+            var result = new Dictionary<string, int>();
+            foreach (object row in rows)
+            {
+                Tradeable tradeable = Field<Tradeable>(row, "Tradeable");
+                result[Field<string>(row, "Key")] = tradeable.AnyThing.thingIDNumber;
+            }
+            Check(result.Count == rows.Count, "every row has its own key");
+            return result;
+        };
+        Dictionary<string, int> first = keysOf(false);
+        Dictionary<string, int> again = keysOf(true);
+        Check(first.Count == again.Count && first.All(pair => again.ContainsKey(pair.Key) && again[pair.Key] == pair.Value), "keys name the same goods in a freshly built deal: " + string.Join(", ", first.Keys));
+        var wanted = new Dictionary<string, int>
+        {
+            { "Steel", 1 }, { "Gold", 7 }, { "Apparel_Parka:Leather_Wolf@Good", 3 }, { "Apparel_Parka:Leather_Wolf@Normal", 4 },
+            { "MeleeWeapon_LongSword:Steel@Normal", 5 }, { "MeleeWeapon_LongSword:Steel@Normal#2", 6 }
+        };
+        Check(first.Count == wanted.Count && wanted.All(pair => first.ContainsKey(pair.Key) && first[pair.Key] == pair.Value), "keys are def[:stuff][@quality], with #2 for a second hit point band: " + string.Join(", ", first.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
+
+        // A pawn's key names one pawn, and any pawn of its group finds the row.
+        Type rowType = mod.GetType("RiMCP.Read.TradeRow", true);
+        object herd = Activator.CreateInstance(rowType);
+        rowType.GetField("Key").SetValue(herd, "pawn:Muffalo10");
+        rowType.GetField("Tradeable").SetValue(herd, Tradeables(new Thing[] { TradeThing("Muffalo", 10, 1, -1), TradeThing("Muffalo", 11, 1, -1) }, new Thing[0]));
+        IList rowsList = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(rowType));
+        rowsList.Add(herd);
+        Func<string, object> find = key => Invoke("RiMCP.Read.TradeSupport", "FindRow", rowsList, key);
+        Check(ReferenceEquals(find("pawn:Muffalo10"), herd) && ReferenceEquals(find(" pawn:Muffalo11 "), herd), "a pawn key finds its group by any member");
+        Check(find("pawn:Muffalo99") == null && find("Steel") == null && find(null) == null, "an unknown key finds nothing");
+    }
+
+    // The two refusals that used to say agents cannot trade now point to the tools that can.
+    private static void CheckTradeRefusalsPointToTools()
+    {
+        Type actions = mod.GetType("RiMCP.Command.GameActions", true);
+        Func<string, string> option = type => (string)actions.GetMethod("OptionOriginReason", Static).Invoke(null, new object[] { type, null });
+        string ship = option("TradeShip");
+        Check(ship != null && ship.Contains("list_traders") && ship.Contains("get_trade") && ship.Contains("execute_trade") && !ship.Contains("cannot use it yet"), "a call to a trade ship points to the trade tools: " + ship);
+        Check(option("PassingShip") != null && !option("PassingShip").Contains("execute_trade"), "other comms calls stay refused as before");
+        MethodInfo forOption = actions.GetMethod("ForOption", Static);
+        FloatMenuOptionProvider trade = (FloatMenuOptionProvider)Activator.CreateInstance(typeof(FloatMenuOptionProvider_Trade));
+        FloatMenuOption made = (FloatMenuOption)FormatterServices.GetUninitializedObject(typeof(FloatMenuOption));
+        made.action = Log.Clear;
+        object origin = forOption.Invoke(null, new object[] { trade, made, null });
+        string reason = Field<string>(origin, "Unsupported");
+        Check(reason != null && reason.Contains("execute_trade") && !reason.Contains("cannot trade yet"), "the Trade option points to the trade tools: " + reason);
     }
 
     private static void ExpectCommandError(int status, Action action)
