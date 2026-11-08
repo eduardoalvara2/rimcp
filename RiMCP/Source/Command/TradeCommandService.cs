@@ -242,8 +242,8 @@ namespace RiMCP.Command
             {
                 int landed = pawn
                     ? planned.Row.Tradeable.thingsTrader.OfType<Pawn>().Take(planned.Line.Count).Count(each => each.Faction == Faction.OfPlayer)
-                    : entry.Orbital ? arrivals.PodContents(planned.DefName) : arrivals.NewOnMap(planned.DefName);
-                ok = traderAfter == planned.TraderBefore - planned.Line.Count && landed >= planned.Line.Count;
+                    : entry.Orbital ? arrivals.PodContents(planned.DefName) : arrivals.GainedOnMap(planned.DefName);
+                ok = BuyArrived(planned.TraderBefore, traderAfter, planned.Line.Count, landed, planned.ColonyBefore, colonyAfter);
                 where = pawn ? "joined the colony" : entry.Orbital ? "dropped by pod" : "placed near the trader";
                 if (!ok)
                 {
@@ -273,6 +273,33 @@ namespace RiMCP.Command
 
         // Vanilla places a caravan's goods near the carrier that held them and drops a ship's by pod
         // near a trade beacon; this reports what actually appeared on the map.
+        // A purchase went through when the trader gave up that many and the goods turned up: on the map
+        // as new things or as growth of a stack they merged into (a caravan places goods beside what is
+        // already there), or in what the colony counts of it.
+        internal static bool BuyArrived(int traderBefore, int traderAfter, int count, int gainedOnMap, int colonyBefore, int colonyAfter)
+        {
+            return traderAfter == traderBefore - count && (gainedOnMap >= count || colonyAfter - colonyBefore >= count);
+        }
+
+        // What each def gained on a map between two looks at its items: new stacks in full, merged ones
+        // by their growth; stacks that shrank count for nothing.
+        internal static Dictionary<string, int> GainByDef(Dictionary<int, int> before, IEnumerable<KeyValuePair<int, KeyValuePair<string, int>>> after)
+        {
+            Dictionary<string, int> gains = new Dictionary<string, int>();
+            foreach (KeyValuePair<int, KeyValuePair<string, int>> item in after)
+            {
+                int was;
+                int gain = item.Value.Value - (before.TryGetValue(item.Key, out was) ? was : 0);
+                if (gain > 0)
+                {
+                    int sum;
+                    gains.TryGetValue(item.Value.Key, out sum);
+                    gains[item.Value.Key] = sum + gain;
+                }
+            }
+            return gains;
+        }
+
         private static object Delivery(TraderEntry entry, Arrivals arrivals)
         {
             if (entry.Orbital)
@@ -289,17 +316,18 @@ namespace RiMCP.Command
                 Dto.Field("mode", "nearTrader"),
                 Dto.Field("note", "Goods are placed near the trader's carrier, outside the colony's storage, and are forbidden while the caravan stays; haul or unforbid them."),
                 Dto.Field("items", arrivals.Placed.Select(item => (object)Dto.Obj(
-                    Dto.Field("id", item.ThingID),
-                    Dto.Field("defName", item.def.defName),
-                    Dto.Field("count", item.stackCount),
-                    Dto.Field("x", item.Position.x),
-                    Dto.Field("z", item.Position.z))).Take(50).ToArray()));
+                    Dto.Field("id", item.Thing.ThingID),
+                    Dto.Field("defName", item.Thing.def.defName),
+                    Dto.Field("count", item.Gained),
+                    Dto.Field("mergedIntoStack", item.Gained < item.Thing.stackCount ? (object)item.Thing.stackCount : null),
+                    Dto.Field("x", item.Thing.Position.x),
+                    Dto.Field("z", item.Thing.Position.z))).Take(50).ToArray()));
         }
 
         // The items and drop pods on a map, to tell what a deal brought.
         private sealed class Snapshot
         {
-            public HashSet<int> Items = new HashSet<int>();
+            public Dictionary<int, int> Items = new Dictionary<int, int>();
             public HashSet<int> Pods = new HashSet<int>();
 
             public static Snapshot Of(Map map)
@@ -313,7 +341,7 @@ namespace RiMCP.Command
                     }
                     else if (thing.def.category == ThingCategory.Item)
                     {
-                        snapshot.Items.Add(thing.thingIDNumber);
+                        snapshot.Items[thing.thingIDNumber] = thing.stackCount;
                     }
                 }
                 return snapshot;
@@ -338,9 +366,14 @@ namespace RiMCP.Command
                             arrivals.Pods.Add(info);
                         }
                     }
-                    else if (thing.def.category == ThingCategory.Item && !before.Items.Contains(thing.thingIDNumber))
+                    else if (thing.def.category == ThingCategory.Item)
                     {
-                        arrivals.Placed.Add(thing);
+                        int was;
+                        int gained = thing.stackCount - (before.Items.TryGetValue(thing.thingIDNumber, out was) ? was : 0);
+                        if (gained > 0)
+                        {
+                            arrivals.Placed.Add(new PlacedItem { Thing = thing, Gained = gained });
+                        }
                     }
                 }
                 return arrivals;
@@ -370,6 +403,12 @@ namespace RiMCP.Command
             }
         }
 
+        private sealed class PlacedItem
+        {
+            public Thing Thing;
+            public int Gained;
+        }
+
         private sealed class PodInfo
         {
             public IntVec3 Position;
@@ -379,12 +418,12 @@ namespace RiMCP.Command
         private sealed class Arrivals
         {
             public List<PodInfo> Pods = new List<PodInfo>();
-            public List<Thing> Placed = new List<Thing>();
+            public List<PlacedItem> Placed = new List<PlacedItem>();
             public List<KeyValuePair<string, int>> Delivered = new List<KeyValuePair<string, int>>();
 
-            public int NewOnMap(string defName)
+            public int GainedOnMap(string defName)
             {
-                return Placed.Where(item => item.def.defName == defName).Sum(item => item.stackCount);
+                return Placed.Where(item => item.Thing.def.defName == defName).Sum(item => item.Gained);
             }
 
             public int PodContents(string defName)

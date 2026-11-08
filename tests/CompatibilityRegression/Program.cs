@@ -305,6 +305,7 @@ internal static class Program
         Test("the trade tools reach their handlers on their routes and groups, and document the tradeable key", CheckTradeTools);
         Test("fire_incident reaches its handler in the game settings group and offers exactly the allow-listed incidents", CheckIncidentTool);
         Test("trade tools refuse bad input before anything runs, and each needs a loaded game", CheckTradeInputs);
+        Test("a bought item that merged into an existing stack is an arrival, and goods that never come are not", CheckTradeArrival);
         Test("tradeable keys are def, stuff and quality, numbered by hit points, and stay the same in a freshly built deal", CheckTradeKeys);
         Test("fire_incident is off by default, refuses before anything is looked at, and no tool can turn it on", CheckIncidentGate);
         Test("the Trade option and the trade ship call point to the trade tools instead of refusing", CheckTradeRefusalsPointToTools);
@@ -3257,6 +3258,32 @@ internal static class Program
         string[] allowed = (string[])mod.GetType("RiMCP.Command.IncidentCommandService", true).GetField("Allowed", Static).GetValue(null);
         Check(allowed.OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(new[] { "OrbitalTraderArrival", "RaidEnemy", "TraderCaravanArrival" }), "the allowlist is the two traders and the raid: " + string.Join(", ", allowed));
         Check(offered.OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(allowed.OrderBy(name => name, StringComparer.Ordinal)), "fire_incident offers exactly its allowlist");
+    }
+
+    // A caravan places bought goods beside what is already there, so they can merge into a stack: that is
+    // an arrival, and goods that never come are still a failure.
+    private static void CheckTradeArrival()
+    {
+        Func<int, int, int, int, int, int, bool> arrived = (traderBefore, traderAfter, count, onMap, colonyBefore, colonyAfter) =>
+            (bool)Invoke("RiMCP.Command.TradeCommandService", "BuyArrived", traderBefore, traderAfter, count, onMap, colonyBefore, colonyAfter);
+        Check(arrived(206, 203, 3, 3, 10, 13), "goods that arrived verify");
+        Check(arrived(206, 203, 3, 3, 10, 10), "goods placed outside what the colony counts still verify");
+        Check(arrived(206, 203, 3, 0, 10, 13), "goods the colony counts verify even when the map shows no new stack");
+        Check(!arrived(206, 203, 3, 0, 10, 10), "goods that never arrive do not verify");
+        Check(!arrived(206, 206, 3, 3, 10, 13), "a trader that kept its goods does not verify");
+        Check(!arrived(206, 203, 3, 2, 10, 12), "fewer goods than bought do not verify");
+
+        // A stack of 10 already on the ground that grows to 13 is a gain of 3, a new stack counts in full,
+        // and a stack that shrank counts for nothing.
+        var after = new List<KeyValuePair<int, KeyValuePair<string, int>>>
+        {
+            new KeyValuePair<int, KeyValuePair<string, int>>(1, new KeyValuePair<string, int>("Pemmican", 13)),
+            new KeyValuePair<int, KeyValuePair<string, int>>(2, new KeyValuePair<string, int>("Silver", 144)),
+            new KeyValuePair<int, KeyValuePair<string, int>>(3, new KeyValuePair<string, int>("MealSurvivalPack", 20))
+        };
+        var before = new Dictionary<int, int> { { 1, 10 }, { 3, 30 } };
+        var gains = (Dictionary<string, int>)Invoke("RiMCP.Command.TradeCommandService", "GainByDef", before, after);
+        Check(gains["Pemmican"] == 3 && gains["Silver"] == 144 && !gains.ContainsKey("MealSurvivalPack") && gains.Count == 2, "gains: " + string.Join(", ", gains.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
     }
 
     private static void CheckTradeInputs()
