@@ -6,9 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Every pawn read (`list_pawns`, at any detail, and `get_pawn`) has `bleedRatePerDay`, the share of the pawn's blood lost per day (0.45 is the Health tab's 45%/day), and `hoursUntilBloodLossDeath`, the in-game hours until blood loss kills, both as the Health tab computes them: the rate is `HediffSet.BleedRateTotal`, and the hours are the game's `HealthUtility.TicksUntilDeathDueToBloodLoss` over 2,500. Both are null when the pawn is not bleeding, which, as on the tab, is a rate of 1% a day or less. The hours are null too for a Deathless pawn (Biotech), whom blood loss cannot kill, and are given past a day, where the tab says Won't bleed out soon.
+- `get_colony_status.medical.bleedingPawns` lists the bleeding core pawns (colonists, slaves and prisoners), most urgent first: the fewest hours left, then the fastest bleeding, and those blood loss cannot kill last. Each has `id`, `name`, `role`, `downed`, `bleedRatePerDay` and `hoursUntilBloodLossDeath`. A `bleedingCorePawns` risk heads `topRisks` while anyone bleeds.
+- `advance_time` stops on `bleedingCritical`: blood loss would kill a colonist in under 6 in-game hours (`AdvanceRun.BleedingCriticalHours`), time for a doctor to reach them and tend. Its event names the colonist, and its detail the hours left and the rate, such as `5.9 in-game hours until death by blood loss, bleeding 45% a day`. It stops once per bleeding: a colonist stays critical until they stop bleeding, even if tending some wounds buys time, and only bleeding again can stop a run again. This is kept from run to run within one loaded game, like a fire's episode, and, like the other stops, a colonist already critical when a run starts does not stop it. Bleeding is checked every 250 ticks, for every run. It is in the default `stopOn`, ahead of `downed`: a colonist bleeding out in the same frame as they go down is reported as the cause.
 - A pawn another pawn carries, such as a downed colonist being rescued or carried off by kidnappers, is not spawned while carried, so `list_pawns` left it out and `get_pawn` answered `Pawn not found.`. Both now find it, at its carrier's position, with `carriedBy` (the carrier's ids, name and role). Commands still act only on spawned pawns.
 - `get_pawn` for a pawn that is not on the map says, when it can, where the pawn is instead: dead with the corpse on this map, on another map (pass `mapId`), kidnapped by a faction, in a caravan, or on no map. Pawns under fog stay `Pawn not found.`.
-- Not yet tried in game: a carried pawn's read. The regression suite does not cover it, as it needs a map.
+- Not yet tried in game: the bleeding reads and stop on a live colony, and a carried pawn's read. The regression suite covers the bleeding logic on objects made without the game; a carried pawn needs a map.
+
+### Changed
+
+- `get_colony_status.medical.bleeding` counts pawns bleeding as the Health tab shows it (a total over 1% a day), the same pawns as `bleedingPawns`, instead of pawns with any wound that bleeds at all.
 
 ## 1.1.0+rimplayer.2 (rimplayer fork) - 2026-11-08
 

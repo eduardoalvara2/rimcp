@@ -28,6 +28,10 @@ namespace RiMCP.Command
         // for a run whose stopOn has stuck.
         public bool Stuck;
         public string StuckDetail;
+        // Blood loss would kill the colonist in under AdvanceRun.BleedingCriticalHours, from the
+        // moment that was first seen until they stop bleeding (see BleedingWatch).
+        public bool BleedingCritical;
+        public string BleedingDetail;
     }
 
     internal sealed class LetterState
@@ -72,14 +76,17 @@ namespace RiMCP.Command
         public const string Running = "running";
         public const int MaxEvents = 50;
         // Also the order in which simultaneous events are reported.
-        public static readonly string[] Conditions = { "death", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter", "letter" };
+        public static readonly string[] Conditions = { "death", "bleedingCritical", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter", "letter" };
         // Everything a player stops for, which is all but letter: fire is a fire on the ground in a
         // home map's Home area (the game's Fire in home area alert also counts other maps' and burning
-        // pawns), starving is the game's Starvation alert, and stuck is a colonist the game does not
-        // report.
-        public static readonly string[] DefaultStopOn = { "death", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter" };
+        // pawns), starving is the game's Starvation alert, and stuck and bleedingCritical are
+        // colonists the game does not alert on.
+        public static readonly string[] DefaultStopOn = { "death", "bleedingCritical", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter" };
         // Fire cells burning in a Home area at which fire stops a run again as it grows.
         public static readonly int[] FireSizes = { 1, 10, 50 };
+        // In-game hours until death by blood loss, as the Health tab computes it, under which a
+        // colonist's bleeding is critical: time for a doctor to reach them and tend.
+        public const float BleedingCriticalHours = 6f;
 
         public readonly int Id;
         public readonly string RequestId;
@@ -223,6 +230,10 @@ namespace RiMCP.Command
                     changes.Add(PawnEvent("death", current.Tick, now, "died"));
                     continue;
                 }
+                if (now.BleedingCritical && !before.BleedingCritical)
+                {
+                    changes.Add(PawnEvent("bleedingCritical", current.Tick, now, now.BleedingDetail));
+                }
                 if (now.Downed && !before.Downed)
                 {
                     changes.Add(PawnEvent("downed", current.Tick, now, "downed"));
@@ -313,6 +324,37 @@ namespace RiMCP.Command
         }
     }
 
+    // Which colonists' bleeding is critical: blood loss would kill them in under
+    // AdvanceRun.BleedingCriticalHours. Once critical, a colonist stays so until they stop bleeding,
+    // even if tending some wounds buys time, so it stops a run once per bleeding, and again only
+    // after they stop bleeding and bleed again. It is kept from run to run within one loaded game,
+    // like the fire episode; a run that starts with a colonist already critical does not stop for it.
+    internal sealed class BleedingWatch
+    {
+        private readonly Dictionary<string, string> critical = new Dictionary<string, string>();
+
+        // hoursUntilDeath is null when the colonist is not bleeding, or blood loss cannot kill them.
+        public bool Note(string id, float? hoursUntilDeath, string detail)
+        {
+            if (hoursUntilDeath == null)
+            {
+                critical.Remove(id);
+            }
+            else if (hoursUntilDeath.Value < AdvanceRun.BleedingCriticalHours && !critical.ContainsKey(id))
+            {
+                critical[id] = detail;
+            }
+            return critical.ContainsKey(id);
+        }
+
+        // The detail from when the colonist's bleeding turned critical.
+        public string Critical(string id)
+        {
+            string detail;
+            return critical.TryGetValue(id, out detail) ? detail : null;
+        }
+    }
+
     // Whether one colonist has been trapped long enough to count as stuck. Each check says whether
     // the colonist is trapped now: awake, undrafted, not downed, on a home map, and unable to reach
     // any of its beds or food. Asleep, drafted, downed, or able to reach one starts it over, and so
@@ -395,6 +437,12 @@ namespace RiMCP.Command
         // The fire episode carries from run to run within one loaded game.
         private static FireWatch fire = new FireWatch();
         private static object fireGame;
+        // Bleeding is checked every 250 ticks too, for every run, and critical bleeding carries from
+        // run to run within one loaded game, like the fire episode.
+        private const int BleedingCheckInterval = GenTicks.TickRareInterval;
+        private static int bleedingCheckedTick = int.MinValue;
+        private static BleedingWatch bleeding = new BleedingWatch();
+        private static object bleedingGame;
 
         // Replaceable so tests can simulate an observation failure.
         internal static Func<AdvanceObservation> Observer = Observe;
@@ -438,6 +486,7 @@ namespace RiMCP.Command
             tracked = new List<Pawn>();
             foodCheckedTick = int.MinValue;
             stuckCheckedTick = int.MinValue;
+            bleedingCheckedTick = int.MinValue;
             stuck.Clear();
             watchStuck = stopOn.Contains("stuck");
             AdvanceObservation baseline = Observe();
@@ -582,6 +631,20 @@ namespace RiMCP.Command
             {
                 stuckCheckedTick = observation.Tick;
                 CheckStuck(pawns, observation.Tick);
+            }
+            if (!ReferenceEquals(bleedingGame, Current.Game))
+            {
+                bleeding = new BleedingWatch();
+                bleedingGame = Current.Game;
+            }
+            if (observation.Tick < bleedingCheckedTick || observation.Tick >= bleedingCheckedTick + BleedingCheckInterval)
+            {
+                bleedingCheckedTick = observation.Tick;
+                foreach (Pawn pawn in pawns)
+                {
+                    Bleeding now = Bleeding.Of(pawn);
+                    bleeding.Note(pawn.ThingID, now == null ? null : now.HoursUntilDeath, now == null ? null : now.Describe());
+                }
             }
             // Colonists who died since the last frame are no longer spawned colonists.
             pawns.AddRange(tracked.Where(pawn => pawn.Dead && !pawns.Contains(pawn)));
@@ -741,6 +804,8 @@ namespace RiMCP.Command
                 state.Stuck = true;
                 state.StuckDetail = timer.Detail;
             }
+            state.BleedingDetail = bleeding.Critical(pawn.ThingID);
+            state.BleedingCritical = state.BleedingDetail != null;
             return state;
         }
 

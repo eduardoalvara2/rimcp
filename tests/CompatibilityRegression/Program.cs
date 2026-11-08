@@ -201,7 +201,9 @@ internal static class Program
         Test("a colonist is stuck only after an hour trapped, and starts over when freed or after a gap", CheckStuckTimer);
         Test("a fire episode stops once per size however it flickers, and ends only once it has been out a while", CheckFireEpisode);
         Test("a stuck check tries one target per place, nearest first, up to a cap", CheckStuckTargets);
-        Test("fire, starving, and stuck stop by default, and the schema offers exactly the run's conditions", CheckStopConditions);
+        Test("fire, starving, stuck, and bleedingCritical stop by default, and the schema offers exactly the run's conditions", CheckStopConditions);
+        Test("bleeding reads as the Health tab shows it: rate per day, hours until blood loss kills, most urgent first", CheckBleedingReads);
+        Test("advance stops when a colonist's bleeding turns critical, once per bleeding, and again only after it stops", CheckBleedingStops);
         Test("advance retries are recognised across recent runs and need matching arguments", CheckAdvanceReceipts);
         Test("get_advance answers for the requested run, and a deferred reply stays bound to it", CheckAdvanceWaitBinding);
         Test("a waiting request returns when its run ends, with that run's result", CheckDeferredDispatch);
@@ -2607,11 +2609,72 @@ internal static class Program
         Type run = mod.GetType("RiMCP.Command.AdvanceRun", true);
         string[] conditions = (string[])run.GetField("Conditions").GetValue(null);
         string[] defaults = (string[])run.GetField("DefaultStopOn").GetValue(null);
-        Check(new[] { "fire", "starving", "stuck" }.All(defaults.Contains) && conditions.Except(defaults).SequenceEqual(new[] { "letter" }), "every condition but letter stops by default: " + string.Join(", ", defaults));
+        Check(new[] { "fire", "starving", "stuck", "bleedingCritical" }.All(defaults.Contains) && conditions.Except(defaults).SequenceEqual(new[] { "letter" }), "every condition but letter stops by default: " + string.Join(", ", defaults));
+        Check(Array.IndexOf(conditions, "bleedingCritical") == Array.IndexOf(conditions, "death") + 1, "bleeding to death outranks every other stop but a death");
         var stopOn = (Dictionary<string, object>)ToolProperties(Tool("advance_time"))["stopOn"];
         string[] offered = ((IEnumerable)((Dictionary<string, object>)stopOn["items"])["enum"]).Cast<string>().ToArray();
         Check(offered.SequenceEqual(conditions), "the schema offers exactly the run's conditions: " + string.Join(", ", offered));
         Check((string)Invoke("RiMCP.Command.TimeCommandService", "ParseCondition", " Stuck ") == "stuck", "conditions parse by name, trimmed and case-insensitively");
+    }
+
+    private static object BleedingOf(float rate, int? ticksUntilDeath)
+    {
+        return Invoke("RiMCP.Read.Bleeding", "From", rate, ticksUntilDeath);
+    }
+
+    private static void CheckBleedingReads()
+    {
+        Check(BleedingOf(0.01f, 1000) == null && BleedingOf(0f, null) == null, "at 1% a day or less the Health tab shows no bleeding");
+        object fast = BleedingOf(0.45f, 7250);
+        Check(Math.Abs(Field<float>(fast, "RatePerDay") - 0.45f) < 1e-6 && Field<float?>(fast, "HoursUntilDeath") == 2.9f, "hours are the game's ticks until death over 2,500");
+        Check((double)fast.GetType().GetProperty("HoursDto").GetValue(fast) == 2.9 && (double)fast.GetType().GetProperty("RateDto").GetValue(fast) == 0.45, "reads round the hours and the rate");
+        Check((string)fast.GetType().GetMethod("Describe").Invoke(fast, null) == "2.9 in-game hours until death by blood loss, bleeding 45% a day", "the detail names the hours and the rate: " + fast.GetType().GetMethod("Describe").Invoke(fast, null));
+        object deathless = BleedingOf(0.8f, null);
+        Check(deathless != null && Field<float?>(deathless, "HoursUntilDeath") == null && deathless.GetType().GetProperty("HoursDto").GetValue(deathless) == null, "a pawn blood loss cannot kill bleeds with no time to death");
+        Check(Field<float?>(BleedingOf(0.5f, int.MaxValue), "HoursUntilDeath") == null, "the game's no-death answer is no time");
+        Check(Invoke("RiMCP.Read.Bleeding", "Of", new Pawn()) == null, "a pawn without health is not bleeding");
+
+        object slow = BleedingOf(0.2f, 50000);
+        object soon = BleedingOf(0.3f, 2500);
+        object sameSoonFaster = BleedingOf(0.9f, 2500);
+        MethodInfo urgent = mod.GetType("RiMCP.Read.Bleeding", true).GetMethod("MostUrgentFirst").MakeGenericMethod(typeof(string));
+        var rows = new Dictionary<string, object> { { "slow", slow }, { "deathless", deathless }, { "soon", soon }, { "faster", sameSoonFaster } };
+        Type selector = typeof(Func<,>).MakeGenericType(typeof(string), mod.GetType("RiMCP.Read.Bleeding", true));
+        ParameterExpression key = Expression.Parameter(typeof(string), "key");
+        Delegate lookup = Expression.Lambda(selector, Expression.Convert(Expression.Property(Expression.Constant(rows), "Item", key), mod.GetType("RiMCP.Read.Bleeding", true)), key).Compile();
+        var ordered = (List<string>)urgent.Invoke(null, new object[] { rows.Keys.ToArray(), lookup });
+        Check(ordered.SequenceEqual(new[] { "faster", "soon", "slow", "deathless" }), "soonest death first, then fastest bleeding, and those it cannot kill last: " + string.Join(",", ordered));
+    }
+
+    private static object Bleeder(string id, bool critical)
+    {
+        return New("ColonistState", "Id", id, "Name", id, "Bleeding", true, "BleedingCritical", critical, "BleedingDetail", critical ? "5.9 in-game hours until death by blood loss, bleeding 45% a day" : null);
+    }
+
+    private static void CheckBleedingStops()
+    {
+        object game = new object();
+        object atStart = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, new[] { Bleeder("A", true), Bleeder("B", false) }, new object[0]), null);
+        Step(atStart, Observation(game, 110, TimeSpeed.Superfast, null, new[] { Bleeder("A", true), Bleeder("B", false) }, new object[0]));
+        Check(Field<string>(atStart, "Status") == "running", "a colonist already critical at the start does not stop the run");
+        Step(atStart, Observation(game, 120, TimeSpeed.Superfast, null, new[] { Bleeder("A", true), Bleeder("B", true) }, new object[0]));
+        object stoppedBy = Field<object>(atStart, "StoppedBy");
+        Check(Field<string>(atStart, "Status") == "stopped" && Field<string>(stoppedBy, "Kind") == "bleedingCritical" && Field<string>(stoppedBy, "PawnId") == "B" && Field<string>(stoppedBy, "Detail").StartsWith("5.9 in-game hours"), "bleeding turning critical stops the run by default, naming the colonist and the hours");
+
+        object both = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, new[] { Colonist("C") }, new object[0]), null);
+        object downedAndCritical = Bleeder("C", true);
+        downedAndCritical.GetType().GetField("Downed").SetValue(downedAndCritical, true);
+        Step(both, Observation(game, 110, TimeSpeed.Superfast, null, new[] { downedAndCritical }, new object[0]));
+        Check(Field<string>(Field<object>(both, "StoppedBy"), "Kind") == "bleedingCritical" && Events(both).SequenceEqual(new[] { "bleedingCritical", "downed", "injured" }), "bleeding to death is the cause over going down in the same frame: " + string.Join(", ", Events(both)));
+
+        object watch = New("BleedingWatch");
+        MethodInfo note = watch.GetType().GetMethod("Note");
+        Func<float?, bool> check = hours => (bool)note.Invoke(watch, new object[] { "A", hours, hours == null ? null : "at " + hours.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+        Check(!check(9f) && !check(6f), "six or more hours left is not critical");
+        Check(check(5.9f) && (string)watch.GetType().GetMethod("Critical").Invoke(watch, new object[] { "A" }) == "at 5.9", "under six hours is critical, with the detail from then");
+        Check(check(8f) && check(4f), "tending some wounds does not end the bleeding's critical stop; it fires once per bleeding");
+        Check(!check(null) && !check(7f) && check(5f), "once the colonist stops bleeding it re-arms for the next bleeding");
+        Check(!(bool)note.Invoke(watch, new object[] { "D", null, null }) && (bool)note.Invoke(watch, new object[] { "E", 1f, "at 1" }) && check(5f), "a colonist blood loss cannot kill is never critical, and each colonist is watched on their own");
     }
 
     private static T Blank<T>()

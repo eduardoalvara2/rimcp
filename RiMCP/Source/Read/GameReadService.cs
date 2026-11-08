@@ -34,7 +34,8 @@ namespace RiMCP.Read
             ReadContext context = ReadContext.FromMap(request);
 
             List<PawnReadService.PawnRole> pawns = PawnReadService.PawnsForFilter(context.Map, "all").ToList();
-            List<Pawn> core = pawns.Where(role => PawnReadService.IsCoreRole(role.Role)).Select(role => role.Pawn).ToList();
+            List<PawnReadService.PawnRole> coreRoles = pawns.Where(role => PawnReadService.IsCoreRole(role.Role)).ToList();
+            List<Pawn> core = coreRoles.Select(role => role.Pawn).ToList();
             List<Pawn> hostiles = pawns.Where(role => role.Role == "hostile").Select(role => role.Pawn).ToList();
             List<ResourceReadService.ResourceGroup> resources = ResourceReadService.CollectResources(context.Map).ToList();
             FoodSummary food = context.Map.IsPlayerHome ? FoodSummary.Of(context.Map) : null;
@@ -47,7 +48,7 @@ namespace RiMCP.Read
                 Dto.Field("pawns", CountPawns(pawns)),
                 Dto.Field("resources", ResourceReadService.SummarizeResources(context.Map, resources)),
                 Dto.Field("food", food == null ? null : food.ToDto(context.Map)),
-                Dto.Field("medical", MedicalSummary(core)),
+                Dto.Field("medical", MedicalSummary(coreRoles)),
                 Dto.Field("mood", MoodSummary(core)),
                 Dto.Field("threats", ThreatReadService.SummarizeThreats(context.Map)),
                 Dto.Field("environment", EnvironmentReadService.SummarizeEnvironment(context.Map)),
@@ -153,14 +154,29 @@ namespace RiMCP.Read
             return counts;
         }
 
-        private static object MedicalSummary(IEnumerable<Pawn> core)
+        // Bleeding as the Health tab shows it, most urgent first, with the hours until blood loss
+        // kills each (null for those it cannot kill).
+        private static object MedicalSummary(List<PawnReadService.PawnRole> core)
         {
-            List<Pawn> downed = core.Where(pawn => pawn.Downed).ToList();
-            List<Pawn> bleeding = core.Where(pawn => pawn.health != null && pawn.health.hediffSet != null && pawn.health.hediffSet.hediffs.Any(hediff => hediff.Bleeding)).ToList();
+            List<Pawn> downed = core.Select(role => role.Pawn).Where(pawn => pawn.Downed).ToList();
+            List<KeyValuePair<PawnReadService.PawnRole, Bleeding>> bleeding = Bleeding.MostUrgentFirst(
+                core.Select(role => new KeyValuePair<PawnReadService.PawnRole, Bleeding>(role, Bleeding.Of(role.Pawn))).Where(pair => pair.Value != null),
+                pair => pair.Value);
             return Dto.Obj(
                 Dto.Field("downed", downed.Count),
                 Dto.Field("bleeding", bleeding.Count),
-                Dto.Field("examples", downed.Concat(bleeding).Distinct().Take(5).Select(pawn => Dto.Obj(
+                Dto.Field("bleedingPawns", bleeding.Select(pair =>
+                {
+                    Dictionary<string, object> row = Dto.Obj(
+                        Dto.Field("id", ReadUtil.ThingId(pair.Key.Pawn)),
+                        Dto.Field("name", ReadUtil.PawnName(pair.Key.Pawn)),
+                        Dto.Field("role", pair.Key.Role),
+                        Dto.Field("downed", pair.Key.Pawn.Downed),
+                        Dto.Field("bleedRatePerDay", pair.Value.RateDto));
+                    row["hoursUntilBloodLossDeath"] = pair.Value.HoursDto;
+                    return (object)row;
+                }).ToArray()),
+                Dto.Field("examples", downed.Concat(bleeding.Select(pair => pair.Key.Pawn)).Distinct().Take(5).Select(pawn => Dto.Obj(
                     Dto.Field("id", ReadUtil.ThingId(pawn)),
                     Dto.Field("name", ReadUtil.PawnName(pawn)),
                     Dto.Field("downed", pawn.Downed))).ToArray()));
@@ -182,6 +198,11 @@ namespace RiMCP.Read
         private static List<object> BuildRisks(Map map, List<Pawn> core, List<Pawn> hostiles, FoodSummary food)
         {
             List<object> risks = new List<object>();
+            int bleeding = core.Count(pawn => Bleeding.Of(pawn) != null);
+            if (bleeding > 0)
+            {
+                risks.Add(Risk("medical", "bleedingCorePawns", "Core pawns are bleeding; medical.bleedingPawns gives the hours until blood loss kills each, most urgent first.", bleeding, "list_pawns?filter=core"));
+            }
             int downed = core.Count(pawn => pawn.Downed);
             if (downed > 0)
             {

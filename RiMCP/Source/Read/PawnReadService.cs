@@ -253,6 +253,11 @@ namespace RiMCP.Read
             dto["ageBiologicalYears"] = pawn.ageTracker == null ? 0 : pawn.ageTracker.AgeBiologicalYears;
             dto["downed"] = pawn.Downed;
             dto["dead"] = pawn.Dead;
+            // As the Health tab shows them; both null when not bleeding, and the hours null too when
+            // blood loss cannot kill the pawn.
+            Bleeding bleeding = Bleeding.Of(pawn);
+            dto["bleedRatePerDay"] = bleeding == null ? null : bleeding.RateDto;
+            dto["hoursUntilBloodLossDeath"] = bleeding == null ? null : bleeding.HoursDto;
             dto["drafted"] = pawn.Drafted;
             dto["position"] = ReadUtil.Cell(pawn.PositionHeld);
             Pawn carrier = pawn.Spawned ? null : pawn.CarriedBy;
