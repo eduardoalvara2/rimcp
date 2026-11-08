@@ -196,6 +196,10 @@ internal static class Program
             object stoppedBy = Field<object>(run, "StoppedBy");
             Check(Field<string>(run, "Status") == "stopped" && Field<string>(stoppedBy, "Kind") == "lowFood" && Field<string>(stoppedBy, "Detail") == "stored food is low", "food dropping low must stop the run by default");
         });
+        Test("advance stops when a fire starts in the Home area and again as it grows, not on one burning at the start", CheckFireStops);
+        Test("advance stops when a colonist starts starving, malnutrition worsens, or a colonist becomes stuck", CheckColonistStops);
+        Test("a colonist is stuck only after an hour trapped, and starts over when freed or after a gap", CheckStuckTimer);
+        Test("fire, starving, and stuck stop by default, and the schema offers exactly the run's conditions", CheckStopConditions);
         Test("advance retries are recognised across recent runs and need matching arguments", CheckAdvanceReceipts);
         Test("get_advance answers for the requested run, and a deferred reply stays bound to it", CheckAdvanceWaitBinding);
         Test("a waiting request returns when its run ends, with that run's result", CheckDeferredDispatch);
@@ -2504,6 +2508,85 @@ internal static class Program
             for (int i = 0; i < saved.Length; i++) met.SetValue(all.GetValue(i), saved[i]);
             Current.Game = null;
         }
+    }
+
+    private static object FireAt(object observation, int level, string detail)
+    {
+        observation.GetType().GetField("FireLevel").SetValue(observation, level);
+        observation.GetType().GetField("Fire").SetValue(observation, detail);
+        return observation;
+    }
+
+    private static void CheckFireStops()
+    {
+        object game = new object();
+        object atStart = AdvanceRun(game, FireAt(Observation(game, 100, TimeSpeed.Superfast), 1, "2 cells"), null);
+        Step(atStart, FireAt(Observation(game, 110, TimeSpeed.Superfast), 1, "5 cells"));
+        Check(Field<string>(atStart, "Status") == "running", "a fire already burning at the start does not stop the run");
+        Step(atStart, FireAt(Observation(game, 120, TimeSpeed.Superfast), 2, "12 cells"));
+        object grew = Field<object>(atStart, "StoppedBy");
+        Check(Field<string>(atStart, "Status") == "stopped" && Field<string>(grew, "Kind") == "fire" && Field<string>(grew, "Detail") == "12 cells", "a fire growing past the next size stops the run");
+
+        object run = AdvanceRun(game, FireAt(Observation(game, 100, TimeSpeed.Superfast), 1, "1 cell"), null);
+        Step(run, Observation(game, 110, TimeSpeed.Superfast));
+        Check(Field<string>(run, "Status") == "running", "a fire going out does not stop the run");
+        Step(run, FireAt(Observation(game, 120, TimeSpeed.Superfast), 1, "1 cell"));
+        Check(Field<string>(run, "Status") == "stopped" && Field<string>(Field<object>(run, "StoppedBy"), "Kind") == "fire", "a new fire stops the run by default");
+
+        MethodInfo level = mod.GetType("RiMCP.Command.AdvanceRun", true).GetMethod("FireLevel", Static);
+        int[] levels = new[] { 0, 1, 9, 10, 49, 50, 112 }.Select(cells => (int)level.Invoke(null, new object[] { cells })).ToArray();
+        Check(levels.SequenceEqual(new[] { 0, 1, 1, 2, 2, 3, 3 }), "fire sizes are 1, 10, and 50 cells: " + string.Join(",", levels));
+    }
+
+    private static object Hungry(string id, int starvation, bool stuck = false)
+    {
+        return New("ColonistState", "Id", id, "Name", id, "Starvation", starvation, "Hunger", starvation == 0 ? null : "hunger at Starving", "Stuck", stuck, "StuckDetail", stuck ? "cannot reach any bed or food from 3,4 for 1.0 in-game hours" : null);
+    }
+
+    private static void CheckColonistStops()
+    {
+        object game = new object();
+        object run = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, new[] { Hungry("A", 1), Hungry("B", 0), Hungry("C", 0, true) }, new object[0]), null);
+        Step(run, Observation(game, 110, TimeSpeed.Superfast, null, new[] { Hungry("A", 1), Hungry("B", 0), Hungry("C", 0, true) }, new object[0]));
+        Check(Field<string>(run, "Status") == "running", "a colonist already starving or stuck at the start does not stop the run");
+        Step(run, Observation(game, 120, TimeSpeed.Superfast, null, new[] { Hungry("A", 2), Hungry("B", 0), Hungry("C", 0, true) }, new object[0]));
+        object worse = Field<object>(run, "StoppedBy");
+        Check(Field<string>(run, "Status") == "stopped" && Field<string>(worse, "Kind") == "starving" && Field<string>(worse, "PawnId") == "A", "malnutrition reaching a worse stage stops the run");
+
+        object trapped = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, new[] { Hungry("B", 0) }, new object[0]), null);
+        Step(trapped, Observation(game, 110, TimeSpeed.Superfast, null, new[] { Hungry("B", 0, true) }, new object[0]));
+        object stuck = Field<object>(trapped, "StoppedBy");
+        Check(Field<string>(trapped, "Status") == "stopped" && Field<string>(stuck, "Kind") == "stuck" && Field<string>(stuck, "Detail").Contains("cannot reach"), "a colonist becoming stuck stops the run");
+
+        object unwatched = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, new[] { Hungry("B", 0) }, new object[0]), new string[0]);
+        Step(unwatched, Observation(game, 110, TimeSpeed.Superfast, null, new[] { Hungry("B", 1) }, new object[0]));
+        Check(Field<string>(unwatched, "Status") == "running" && Events(unwatched).SequenceEqual(new[] { "starving" }), "starving is recorded even when it is not a stop");
+    }
+
+    private static void CheckStuckTimer()
+    {
+        object timer = New("StuckTimer");
+        MethodInfo note = timer.GetType().GetMethod("Note");
+        Func<int, bool, bool> check = (tick, trapped) => (bool)note.Invoke(timer, new object[] { tick, trapped, "cannot reach any bed or food from 3,4" });
+        bool early = false;
+        for (int tick = 1000; tick < 3500; tick += 250) early |= check(tick, true);
+        Check(!early, "less than an hour trapped is not stuck");
+        Check(check(3500, true) && Field<string>(timer, "Detail") == "cannot reach any bed or food from 3,4 for 1.0 in-game hours", "an hour trapped is stuck: " + Field<string>(timer, "Detail"));
+        Check(!check(3750, false) && !check(4000, true), "able to reach a bed or food, or asleep, drafted, or downed, starts it over");
+        Check(!check(9000, true) && Field<int>(timer, "Since") == 9000, "a gap longer than the checks during a run starts it over");
+        Check(!check(8000, true) && Field<int>(timer, "Since") == 8000, "time going back starts it over");
+    }
+
+    private static void CheckStopConditions()
+    {
+        Type run = mod.GetType("RiMCP.Command.AdvanceRun", true);
+        string[] conditions = (string[])run.GetField("Conditions").GetValue(null);
+        string[] defaults = (string[])run.GetField("DefaultStopOn").GetValue(null);
+        Check(new[] { "fire", "starving", "stuck" }.All(defaults.Contains) && conditions.Except(defaults).SequenceEqual(new[] { "letter" }), "every condition but letter stops by default: " + string.Join(", ", defaults));
+        var stopOn = (Dictionary<string, object>)ToolProperties(Tool("advance_time"))["stopOn"];
+        string[] offered = ((IEnumerable)((Dictionary<string, object>)stopOn["items"])["enum"]).Cast<string>().ToArray();
+        Check(offered.SequenceEqual(conditions), "the schema offers exactly the run's conditions: " + string.Join(", ", offered));
+        Check((string)Invoke("RiMCP.Command.TimeCommandService", "ParseCondition", " Stuck ") == "stuck", "conditions parse by name, trimmed and case-insensitively");
     }
 
     private static T Blank<T>()

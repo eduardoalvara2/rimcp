@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using RimWorld;
@@ -19,6 +20,13 @@ namespace RiMCP.Command
         public bool Bleeding;
         public int Injuries;
         public string MentalState;
+        // 0 when fed; 1 when hunger is at Starving; otherwise 1 + the malnutrition stage, so a stage
+        // reached is a step up. Hunger says what it is.
+        public int Starvation;
+        public string Hunger;
+        // Unable to reach any bed or food for a sustained time, checked every 250 ticks.
+        public bool Stuck;
+        public string StuckDetail;
     }
 
     internal sealed class LetterState
@@ -39,6 +47,10 @@ namespace RiMCP.Command
         public string Threat;
         // Label of a home map whose stored food is below the Low food threshold, or null.
         public string LowFood;
+        // How big the largest fire in a home map's Home area is (see AdvanceRun.FireLevel), and
+        // where it burns.
+        public int FireLevel;
+        public string Fire;
         public readonly Dictionary<string, ColonistState> Colonists = new Dictionary<string, ColonistState>();
         public readonly Dictionary<int, LetterState> Letters = new Dictionary<int, LetterState>();
     }
@@ -59,8 +71,12 @@ namespace RiMCP.Command
         public const string Running = "running";
         public const int MaxEvents = 50;
         // Also the order in which simultaneous events are reported.
-        public static readonly string[] Conditions = { "death", "downed", "injured", "mentalBreak", "hostiles", "lowFood", "threatLetter", "letter" };
-        public static readonly string[] DefaultStopOn = { "death", "downed", "injured", "mentalBreak", "hostiles", "lowFood", "threatLetter" };
+        public static readonly string[] Conditions = { "death", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter", "letter" };
+        // Everything a player stops for, which is all but letter: fire and starving are the game's own
+        // Fire in home area and Starvation alerts, and stuck is a colonist the game does not report.
+        public static readonly string[] DefaultStopOn = { "death", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter" };
+        // Fire cells burning in a Home area at which fire stops a run again as it grows.
+        public static readonly int[] FireSizes = { 1, 10, 50 };
 
         public readonly int Id;
         public readonly string RequestId;
@@ -212,10 +228,23 @@ namespace RiMCP.Command
                 {
                     changes.Add(PawnEvent("injured", current.Tick, now, now.Bleeding ? "bleeding" : "new injury"));
                 }
+                if (now.Starvation > before.Starvation)
+                {
+                    changes.Add(PawnEvent("starving", current.Tick, now, now.Hunger));
+                }
+                if (now.Stuck && !before.Stuck)
+                {
+                    changes.Add(PawnEvent("stuck", current.Tick, now, now.StuckDetail));
+                }
                 if (now.MentalState != null && before.MentalState == null)
                 {
                     changes.Add(PawnEvent("mentalBreak", current.Tick, now, now.MentalState));
                 }
+            }
+            // A fire that starts, and the same fire growing past each of FireSizes.
+            if (current.FireLevel > previous.FireLevel)
+            {
+                changes.Add(new AdvanceEvent { Kind = "fire", Tick = current.Tick, Detail = current.Fire });
             }
             if (current.Threat != null && previous.Threat == null)
             {
@@ -239,6 +268,44 @@ namespace RiMCP.Command
         {
             return new AdvanceEvent { Kind = kind, Tick = tick, PawnId = pawn.Id, PawnName = pawn.Name, Detail = detail };
         }
+
+        // How many of FireSizes a fire of this many cells has reached.
+        public static int FireLevel(int cells)
+        {
+            return FireSizes.Count(size => cells >= size);
+        }
+    }
+
+    // Whether one colonist has been trapped long enough to count as stuck. Each check says whether
+    // the colonist is trapped now: awake, undrafted, not downed, on a home map, and unable to reach
+    // any of its beds or food. Asleep, drafted, downed, or able to reach one starts it over, and so
+    // does a gap between checks longer than they come during a run, such as the player playing
+    // between runs.
+    internal sealed class StuckTimer
+    {
+        public const int SustainTicks = GenDate.TicksPerHour;
+        public const int MaxGapTicks = 4 * GenTicks.TickRareInterval;
+
+        public int Since = -1;
+        public int LastTick = int.MinValue;
+        public bool Stuck;
+        public string Detail;
+
+        public bool Note(int tick, bool trapped, string where)
+        {
+            if (!trapped)
+            {
+                Since = -1;
+            }
+            else if (Since < 0 || tick < LastTick || tick - LastTick > MaxGapTicks)
+            {
+                Since = tick;
+            }
+            LastTick = tick;
+            Stuck = trapped && tick - Since >= SustainTicks;
+            Detail = Stuck ? where + " for " + ((double)(tick - Since) / GenDate.TicksPerHour).ToString("0.0", CultureInfo.InvariantCulture) + " in-game hours" : null;
+            return Stuck;
+        }
     }
 
     // Owns advance runs. Everything here runs on the main thread; HTTP threads only wait on a
@@ -258,6 +325,12 @@ namespace RiMCP.Command
         private const int FoodCheckInterval = GenTicks.TickRareInterval;
         private static int foodCheckedTick = int.MinValue;
         private static string lowFood;
+        // Reachability costs too much for every frame too, so colonists are checked for being trapped
+        // every 250 ticks; their timers carry from run to run within one loaded game.
+        private const int StuckCheckInterval = GenTicks.TickRareInterval;
+        private static int stuckCheckedTick = int.MinValue;
+        private static readonly Dictionary<Pawn, StuckTimer> stuck = new Dictionary<Pawn, StuckTimer>();
+        private static object stuckGame;
 
         // Replaceable so tests can simulate an observation failure.
         internal static Func<AdvanceObservation> Observer = Observe;
@@ -300,6 +373,7 @@ namespace RiMCP.Command
             // Take the starting snapshot before unpausing, so a failure here leaves the game as it was.
             tracked = new List<Pawn>();
             foodCheckedTick = int.MinValue;
+            stuckCheckedTick = int.MinValue;
             AdvanceObservation baseline = Observe();
             TickManager ticks = Find.TickManager;
             ticks.CurTimeSpeed = speed;
@@ -437,6 +511,12 @@ namespace RiMCP.Command
                 lowFood = low == null ? null : "stored food on " + (low.Parent == null ? "map " + low.uniqueID : low.Parent.LabelCap) + " is below " + FoodSummary.LowPerColonist + " nutrition per colonist";
             }
             observation.LowFood = lowFood;
+            ObserveFire(observation);
+            if (observation.Tick < stuckCheckedTick || observation.Tick >= stuckCheckedTick + StuckCheckInterval)
+            {
+                stuckCheckedTick = observation.Tick;
+                CheckStuck(pawns, observation.Tick);
+            }
             // Colonists who died since the last frame are no longer spawned colonists.
             pawns.AddRange(tracked.Where(pawn => pawn.Dead && !pawns.Contains(pawn)));
             tracked = pawns.Where(pawn => !pawn.Dead).ToList();
@@ -456,6 +536,100 @@ namespace RiMCP.Command
                 };
             }
             return observation;
+        }
+
+        // Fires in the Home area of a home map, as the game's Fire in home area alert finds them
+        // (unfogged cells only), where colonists fight fires; the largest such fire is reported.
+        private static void ObserveFire(AdvanceObservation observation)
+        {
+            foreach (Map map in Find.Maps)
+            {
+                if (!map.IsPlayerHome)
+                {
+                    continue;
+                }
+                List<Thing> fires = map.listerThings.ThingsOfDef(ThingDefOf.Fire);
+                if (fires.Count == 0)
+                {
+                    continue;
+                }
+                Area_Home home = map.areaManager.Home;
+                int cells = 0;
+                Thing first = null;
+                foreach (Thing fire in fires)
+                {
+                    if (home != null && home[fire.Position] && !fire.Position.Fogged(map))
+                    {
+                        cells++;
+                        first = first ?? fire;
+                    }
+                }
+                int level = AdvanceRun.FireLevel(cells);
+                if (level > observation.FireLevel)
+                {
+                    observation.FireLevel = level;
+                    observation.Fire = cells + (cells == 1 ? " cell" : " cells") + " burning in the Home area of " + MapLabel(map) + ", one at " + first.Position.x + "," + first.Position.z;
+                }
+            }
+        }
+
+        // Each colonist trapped now: awake, undrafted and not downed on a home map that has beds or
+        // food, and unable to reach any of them. The timers decide when that has lasted.
+        private static void CheckStuck(List<Pawn> pawns, int tick)
+        {
+            if (!ReferenceEquals(stuckGame, Current.Game))
+            {
+                stuck.Clear();
+                stuckGame = Current.Game;
+            }
+            foreach (Pawn gone in stuck.Keys.Where(pawn => !pawns.Contains(pawn)).ToList())
+            {
+                stuck.Remove(gone);
+            }
+            Dictionary<Map, List<Thing>> targets = new Dictionary<Map, List<Thing>>();
+            foreach (Pawn pawn in pawns)
+            {
+                StuckTimer timer;
+                if (!stuck.TryGetValue(pawn, out timer))
+                {
+                    stuck[pawn] = timer = new StuckTimer();
+                }
+                string where = null;
+                bool trapped = false;
+                if (pawn.Spawned && pawn.Map.IsPlayerHome && !pawn.Dead && !pawn.Downed && !pawn.Drafted && pawn.Awake())
+                {
+                    List<Thing> reachable;
+                    if (!targets.TryGetValue(pawn.Map, out reachable))
+                    {
+                        targets[pawn.Map] = reachable = BedsAndFood(pawn.Map);
+                    }
+                    trapped = reachable.Count > 0 && !reachable.Any(target => pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly));
+                    if (trapped)
+                    {
+                        where = "cannot reach any bed or food from " + pawn.Position.x + "," + pawn.Position.z;
+                    }
+                }
+                timer.Note(tick, trapped, where);
+            }
+        }
+
+        // The colony's beds for people and the food people eat, unfogged, beds first since there
+        // are fewer of them.
+        private static List<Thing> BedsAndFood(Map map)
+        {
+            List<Thing> targets = map.listerBuildings.allBuildingsColonist
+                .OfType<Building_Bed>()
+                .Where(bed => bed.def.building != null && bed.def.building.bed_humanlike)
+                .Cast<Thing>()
+                .ToList();
+            targets.AddRange(map.listerThings.ThingsInGroup(ThingRequestGroup.FoodSourceNotPlantOrTree)
+                .Where(food => !(food is Corpse) && (food.def.ingestible == null || food.def.ingestible.HumanEdible) && !food.Position.Fogged(map)));
+            return targets;
+        }
+
+        private static string MapLabel(Map map)
+        {
+            return map.Parent == null ? "map " + map.uniqueID : map.Parent.LabelCap.ToString();
         }
 
         // Labels carry rich-text markup, such as the coloured title after a raider's name.
@@ -486,7 +660,38 @@ namespace RiMCP.Command
             // Fresh injuries only: scars are permanent, and diseases needing re-tending are not new harm.
             state.Injuries = pawn.health.hediffSet.hediffs.Count(hediff => hediff is Hediff_Injury && !hediff.IsPermanent());
             state.MentalState = pawn.MentalStateDef == null ? null : ReadUtil.DefLabel(pawn.MentalStateDef);
+            Starvation(pawn, state);
+            StuckTimer timer;
+            if (stuck.TryGetValue(pawn, out timer) && timer.Stuck)
+            {
+                state.Stuck = true;
+                state.StuckDetail = timer.Detail;
+            }
             return state;
+        }
+
+        // Hunger at Starving, as the game's Starvation alert finds it, or the malnutrition it leads
+        // to, by stage.
+        private static void Starvation(Pawn pawn, ColonistState state)
+        {
+            bool starving = pawn.needs != null && pawn.needs.food != null && pawn.needs.food.Starving;
+            Hediff malnutrition = HediffDefOf.Malnutrition == null ? null : pawn.health.hediffSet.GetFirstHediffOfDef(HediffDefOf.Malnutrition);
+            state.Starvation = Math.Max(starving ? 1 : 0, malnutrition == null ? 0 : malnutrition.CurStageIndex + 1);
+            if (state.Starvation == 0)
+            {
+                return;
+            }
+            List<string> parts = new List<string>();
+            if (starving)
+            {
+                parts.Add("hunger at Starving");
+            }
+            if (malnutrition != null)
+            {
+                string stage = malnutrition.CurStage == null || string.IsNullOrEmpty(malnutrition.CurStage.label) ? "" : " " + malnutrition.CurStage.label;
+                parts.Add("malnutrition" + stage + " (" + Math.Round(malnutrition.Severity * 100) + "%)");
+            }
+            state.Hunger = string.Join(", ", parts.ToArray());
         }
     }
 }

@@ -9,11 +9,13 @@ A fork of RimMCP 1.1.0 at `eduardoalvara2/rimcp`, branch `rimplayer`, for the ri
 ### Added
 
 - `list_dialogs` lists the game's question to name the faction and settlement (`Dialog_NamePlayerFactionAndSettlement`, or `Dialog_NamePlayerFaction` or `Dialog_NamePlayerSettlement` when it asks for one name) as a naming dialog: kind `naming`, option `ok`, and `names`, with each field it asks `answer_dialog` for (`factionName`, `settlementName`), the text in its box (the game's suggestion), the longest name its own check takes (40 characters for a faction name, which also has to be a valid file name, and 64 for a settlement's), and the settlement's name now. `answer_dialog` answers it with those names: checked with the dialog's own rules before anything is typed, a refused name says which part of the check it failed and gives the game's message, and the names are then applied as its OK button does, with the dialog's own naming code, message and close, so the game does not ask again. In commitment mode the game renames the save then, as it does for the player. `dismiss_dialog` is unchanged, and the gravship's naming dialog (Odyssey) stays the player's.
+- `advance_time` stops on three more conditions: `fire` (a fire starts in the Home area of a home map, as the game's Fire in home area alert finds it, and again as it reaches 10 and 50 burning cells), `starving` (a colonist's hunger reaches Starving, or malnutrition starts or reaches a worse stage), and `stuck` (an awake, undrafted colonist who is not downed, on a home map, has been unable to reach any of the colony's beds or food for an in-game hour; checked every 250 ticks). Like the others, each stops on a change during the run, not on what was so when it started, and its event names the colonist, or where the fire burns.
 - `get_def` for a research project shows the rest of what the game checks before it can start: `requiresMechanitor`, and where the def sets them `hiddenPrerequisites`, `techprintCount`, `requiredStudied` and `requiresGravEngineInspected`; with a colony loaded, `canStartNow` and the `startRequirements` not met, each with a kind and a message.
 
 ### Changed
 
 - `set_research_project` refuses a project that cannot start naming each requirement not met (`prerequisitesUnfinished`, `techprintsMissing`, `missingResearchBench`, `noMechanitor`, `notStudied`, `undiscovered`, `gravEngineNotInspected`), instead of only saying it cannot be started now.
+- `advance_time`'s default `stopOn` adds `fire`, `starving` and `stuck`, so it is every condition but `letter`: what a player stops for. Pass `stopOn` to leave them out.
 
 ## 1.1.0+rimplayer.1 (rimplayer fork) - 2026-11-08
 
