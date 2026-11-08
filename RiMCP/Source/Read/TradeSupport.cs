@@ -267,8 +267,10 @@ namespace RiMCP.Read
         // The rows of the deal, in a stable order, each under its key. Items key on def, stuff and
         // quality, which is what the game groups them by apart from hit points. Where one key covers
         // several tradeables (hit point bands, unique items such as genepacks) or the item never stacks
-        // (weapons and apparel), the key also carries the lowest thing number among the tradeable's
-        // things, which hauling or eating a stack does not change, and any thing of it finds it.
+        // (weapons and apparel), the key also carries the lowest thing number on the trader's side, or on
+        // the colony's when the trader has none: the trader's goods change least, while the colony's stacks
+        // are hauled, used and damaged. Any thing of a tradeable finds it, so a key survives that too;
+        // only when every thing it named was destroyed or merged away is it not found (a 404).
         // Animals and people key on a thing id of theirs, found the same way.
         public static List<TradeRow> Rows(TradeDeal deal)
         {
@@ -280,7 +282,7 @@ namespace RiMCP.Read
                 foreach (Tradeable tradeable in group)
                 {
                     bool byNumber = !(tradeable.AnyThing is Pawn) && (several || tradeable.AnyThing.def.stackLimit == 1);
-                    rows.Add(new TradeRow { Key = byNumber ? group.Key + "#" + Members(tradeable).Min(thing => thing.thingIDNumber) : group.Key, Tradeable = tradeable });
+                    rows.Add(new TradeRow { Key = byNumber ? group.Key + "#" + (tradeable.thingsTrader.Count > 0 ? tradeable.thingsTrader : tradeable.thingsColony).Min(thing => thing.thingIDNumber) : group.Key, Tradeable = tradeable });
                 }
             }
             return rows.OrderBy(row => row.Key, StringComparer.Ordinal).ToList();
@@ -347,11 +349,12 @@ namespace RiMCP.Read
             return null;
         }
 
-        // The rows now holding any of these things: what is left of a tradeable after a deal, whichever of
-        // its things the game used up.
-        public static List<TradeRow> RowsContaining(List<TradeRow> rows, ICollection<int> thingNumbers)
+        // How many of these things (by thing number) a deal left on one side, found again through the
+        // rows. Only the planned things count, as the game regroups tradeables by rules that are not
+        // transitive (hit points within 10, ages within a year), so a row may now hold other things too.
+        public static int CountOf(List<TradeRow> rows, ICollection<int> thingNumbers, bool traderSide)
         {
-            return rows.Where(row => Members(row.Tradeable).Any(thing => thingNumbers.Contains(thing.thingIDNumber))).ToList();
+            return rows.Sum(row => (traderSide ? row.Tradeable.thingsTrader : row.Tradeable.thingsColony).Where(thing => thingNumbers.Contains(thing.thingIDNumber)).Sum(thing => thing.stackCount));
         }
 
         public static int ColonyCount(Tradeable tradeable)

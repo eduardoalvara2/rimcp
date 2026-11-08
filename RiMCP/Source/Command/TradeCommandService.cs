@@ -157,9 +157,25 @@ namespace RiMCP.Command
                     PawnRelationUtility.Notify_PawnsSeenByPlayer_Letter_Send(entry.Ship.Goods.OfType<Pawn>(), "LetterRelatedPawnsTradeShip".Translate(Faction.OfPlayer.def.pawnsPlural), LetterDefOf.NeutralEvent);
                 }
 
-                Snapshot before = Snapshot.Of(map);
+                Snapshot before = Snapshot.Of(map.listerThings.AllThings);
                 bool traded;
-                bool done = deal.TryExecute(out traded);
+                bool done;
+                try
+                {
+                    done = deal.TryExecute(out traded);
+                }
+                catch (Exception e)
+                {
+                    // The game may have moved goods and silver before it failed (a mod patching a trade
+                    // step, say): keep the receipt, so a retry cannot trade again.
+                    return new CommandResult(true, Dto.Obj(
+                        Dto.Field("traded", null),
+                        Dto.Field("outcomeUnknown", true),
+                        Dto.Field("traderId", entry.Id),
+                        Dto.Field("negotiatorId", who.ThingID),
+                        Dto.Field("verified", false),
+                        Dto.Field("warnings", new object[] { "The game failed during the deal (" + e.GetType().Name + ": " + e.Message + "), so what was traded is unknown. Read list_resources and get_trade before trading again; a retry with this requestId will not run again." })));
+                }
                 if (!done)
                 {
                     throw new CommandException(409, "The game refused the deal (an ideology precept, or the funds check). Nothing was traded.");
@@ -191,7 +207,7 @@ namespace RiMCP.Command
             Tradeable currencyAfter = deal.CurrencyTradeable;
             int colonyShown = currencyAfter == null ? 0 : currencyAfter.CountHeldBy(Transactor.Colony);
             int traderAfter = currencyAfter == null ? 0 : currencyAfter.CountHeldBy(Transactor.Trader);
-            Arrivals arrivals = Snapshot.Arrivals(map, before);
+            Arrivals arrivals = Snapshot.Arrivals(map.listerThings.AllThings, before);
 
             List<string> warnings = new List<string>();
             List<object> results = new List<object>();
@@ -254,7 +270,8 @@ namespace RiMCP.Command
             public string Label;
             public string DefName;
             // The things of the tradeable as planned, to find what is left of it afterwards.
-            public HashSet<int> Members;
+            public HashSet<int> ColonyIds;
+            public HashSet<int> TraderIds;
             public List<Pawn> TraderPawns;
         }
 
@@ -292,7 +309,7 @@ namespace RiMCP.Command
                     throw new CommandException(409, "The colony has " + colony + " of " + label + " ('" + row.Key + "') it can sell this trader, not " + line.Count + ". " + where + " Nothing was traded.");
                 }
             }
-            return new Planned { Row = row, Line = line, ColonyBefore = colony, TraderBefore = trader, Label = label, DefName = tradeable.ThingDef.defName, Members = new HashSet<int>(TradeSupport.Members(tradeable).Select(thing => thing.thingIDNumber)), TraderPawns = tradeable.thingsTrader.OfType<Pawn>().ToList() };
+            return new Planned { Row = row, Line = line, ColonyBefore = colony, TraderBefore = trader, Label = label, DefName = tradeable.AnyThing.GetInnerIfMinified().def.defName, ColonyIds = new HashSet<int>(tradeable.thingsColony.Select(thing => thing.thingIDNumber)), TraderIds = new HashSet<int>(tradeable.thingsTrader.Select(thing => thing.thingIDNumber)), TraderPawns = tradeable.thingsTrader.OfType<Pawn>().ToList() };
         }
 
         // Pass or fail is the trader's side of the count, which the game's numbers keep whatever happens
@@ -300,9 +317,8 @@ namespace RiMCP.Command
         // (not on the map, not in the colony's count) are a warning.
         private static object Verify(Planned planned, List<TradeRow> after, Arrivals arrivals, TraderEntry entry, List<string> warnings)
         {
-            List<TradeRow> now = TradeSupport.RowsContaining(after, planned.Members);
-            int colonyAfter = now.Sum(row => TradeSupport.ColonyCount(row.Tradeable));
-            int traderAfter = now.Sum(row => TradeSupport.TraderCount(row.Tradeable));
+            int colonyAfter = TradeSupport.CountOf(after, planned.ColonyIds, false);
+            int traderAfter = TradeSupport.CountOf(after, planned.TraderIds, true);
             bool pawn = planned.Row.Tradeable.AnyThing is Pawn;
             bool ok;
             int? landed = null;
@@ -404,10 +420,10 @@ namespace RiMCP.Command
             public Dictionary<int, int> Items = new Dictionary<int, int>();
             public HashSet<int> Pods = new HashSet<int>();
 
-            public static Snapshot Of(Map map)
+            public static Snapshot Of(IEnumerable<Thing> things)
             {
                 Snapshot snapshot = new Snapshot();
-                foreach (Thing thing in map.listerThings.AllThings)
+                foreach (Thing thing in things)
                 {
                     if (thing is Skyfaller)
                     {
@@ -421,10 +437,10 @@ namespace RiMCP.Command
                 return snapshot;
             }
 
-            public static Arrivals Arrivals(Map map, Snapshot before)
+            public static Arrivals Arrivals(IEnumerable<Thing> things, Snapshot before)
             {
                 Arrivals arrivals = new Arrivals();
-                foreach (Thing thing in map.listerThings.AllThings.ToList())
+                foreach (Thing thing in things.ToList())
                 {
                     Skyfaller pod = thing as Skyfaller;
                     if (pod != null)

@@ -475,9 +475,20 @@ namespace RiMCP
             listing.Label("Off: agents use only the game's own options and buttons, each checked before it runs.");
             GUI.color = Color.white;
             listing.Gap();
-            Settings.TestIncidentColony = listing.TextEntryLabeled("Test incidents in colony (testing only)", Settings.TestIncidentColony ?? "");
+            int world = Current.Game != null && Find.World != null ? Find.World.info.persistentRandomValue : 0;
+            listing.Label(Settings.TestIncidentWorld == 0 ? "Test incidents (testing only): off for every colony." : "Test incidents (testing only): allowed in the colony " + (string.IsNullOrEmpty(Settings.TestIncidentColonyName) ? "of another world" : "'" + Settings.TestIncidentColonyName + "'") + ".");
+            if (world != 0 && Settings.TestIncidentWorld != world && listing.ButtonText("Allow test incidents in this colony"))
+            {
+                Settings.TestIncidentWorld = world;
+                Settings.TestIncidentColonyName = Faction.OfPlayer == null ? null : Faction.OfPlayer.Name;
+            }
+            if (Settings.TestIncidentWorld != 0 && listing.ButtonText("Turn test incidents off"))
+            {
+                Settings.TestIncidentWorld = 0;
+                Settings.TestIncidentColonyName = null;
+            }
             GUI.color = Color.gray;
-            listing.Label("Empty: fire_incident refuses. Type the exact name of one colony to let agents fire a trade caravan, orbital trader or small raid in that colony only, to practise on.");
+            listing.Label("Off: fire_incident refuses. Allowed: agents can fire a trade caravan, an orbital trader or a small raid in that one world only, to practise on.");
             GUI.color = Color.white;
             listing.Gap();
             listing.CheckboxLabeled("RimMCP button in game", ref Settings.ShowQuickControl, "The button on the bottom bar that shows whether agents are on and working, and pauses them or changes the access level in a click.");

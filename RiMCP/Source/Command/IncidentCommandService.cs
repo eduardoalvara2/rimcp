@@ -12,8 +12,8 @@ using Verse.AI.Group;
 namespace RiMCP.Command
 {
     // Fires one allow-listed incident on a map now, for testing: a colony can practise capturing a
-    // downed raider or trading without waiting for the storyteller. Off unless the player turns on
-    // "Allow test incidents" in RimMCP's settings, which no tool can change.
+    // downed raider or trading without waiting for the storyteller. Off unless the player used "Allow test
+    // incidents in this colony" on RimMCP's Safety tab for the loaded world, which no tool can change.
     internal static class IncidentCommandService
     {
         public const string TraderCaravan = "TraderCaravanArrival";
@@ -27,18 +27,19 @@ namespace RiMCP.Command
         public const int DefaultRaidPoints = 60;
         public const int MaxRaidPoints = 5000;
 
-        public const string Disabled = "fire_incident is for testing only and is turned off. The player allows it for one colony by typing its name in the 'Test incidents in colony (testing only)' setting on the Safety tab of RimMCP's mod settings; no tool can. Nothing was sent to the game.";
+        public const string Disabled = "fire_incident is for testing only and is turned off. The player allows it for one colony with the 'Allow test incidents in this colony' button on the Safety tab of RimMCP's mod settings; no tool can. Nothing was sent to the game.";
 
-        // Only the colony the player named, compared by name as the player typed it.
-        internal static bool ColonyAllowed(string allowed, string current)
+        // Only the world the player allowed: its persistentRandomValue, which is saved with the world and is
+        // not a name an agent could give a colony.
+        internal static bool WorldAllowed(int allowed, int current)
         {
-            return !string.IsNullOrWhiteSpace(allowed) && !string.IsNullOrWhiteSpace(current) && string.Equals(allowed.Trim(), current.Trim(), StringComparison.OrdinalIgnoreCase);
+            return allowed != 0 && allowed == current;
         }
 
         public static BridgeResponse FireIncident(BridgeRequest request, RouteMatch route)
         {
             // The gate comes first: with it off, nothing else about the call is looked at or run.
-            if (BridgeRuntime.TestIncidentColony == null)
+            if (BridgeRuntime.TestIncidentWorld == 0)
             {
                 throw new CommandException(403, Disabled);
             }
@@ -65,10 +66,10 @@ namespace RiMCP.Command
 
             CommandContext context = CommandUtil.ContextFor(body.MapId);
             CommandUtil.RequireMap(context);
-            string colony = Faction.OfPlayer == null || Faction.OfPlayer.Name == null ? null : Faction.OfPlayer.Name;
-            if (!ColonyAllowed(BridgeRuntime.TestIncidentColony, colony))
+            if (Find.World == null || !WorldAllowed(BridgeRuntime.TestIncidentWorld, Find.World.info.persistentRandomValue))
             {
-                throw new CommandException(403, "fire_incident is allowed only in the colony '" + BridgeRuntime.TestIncidentColony + "', and this game's colony is '" + (colony ?? "unnamed") + "'. Nothing was sent to the game.");
+                string colony = BridgeRuntime.TestIncidentColonyName;
+                throw new CommandException(403, "fire_incident is allowed only in the world the player chose" + (string.IsNullOrEmpty(colony) ? "" : " (colony '" + colony + "')") + ", and this game is another one. Nothing was sent to the game.");
             }
             RequestKey key = RequestKey.For("fire_incident", requestId, context.Map, incident, body.Points);
             return CommandReceipts.Once(context, key, () => Fire(context, incident, body.Points));
@@ -103,7 +104,37 @@ namespace RiMCP.Command
 
             HashSet<int> known = new HashSet<int>(Find.LetterStack.LettersListForReading.Select(letter => letter.ID));
             HashSet<int> knownPawns = new HashSet<int>(map.mapPawns.AllPawnsSpawned.Select(pawn => pawn.thingIDNumber));
-            bool fired = worker.TryExecute(parms);
+            bool fired;
+            try
+            {
+                fired = worker.TryExecute(parms);
+            }
+            catch (Exception e)
+            {
+                return Unknown(incident, e);
+            }
+            try
+            {
+                return Settle(map, def, incident, parms, requestedPoints, known, knownPawns, fired);
+            }
+            catch (Exception e)
+            {
+                return Unknown(incident, e);
+            }
+        }
+
+        // What an exception after the game ran the incident leaves: the receipt, so a retry does not fire
+        // it again, and a warning that the outcome is unknown.
+        private static CommandResult Unknown(string incident, Exception e)
+        {
+            return new CommandResult(true, Dto.Obj(
+                Dto.Field("incident", incident),
+                Dto.Field("outcomeUnknown", true),
+                Dto.Field("reason", "The game may have fired the incident, but it failed on the way (" + e.GetType().Name + ": " + e.Message + "). Check get_events and list_pawns before firing again.")));
+        }
+
+        private static CommandResult Settle(Map map, IncidentDef def, string incident, IncidentParms parms, float requestedPoints, HashSet<int> known, HashSet<int> knownPawns, bool fired)
+        {
             bool recovered = false;
             List<Pawn> arrived = map.mapPawns.AllPawnsSpawned.Where(pawn => !knownPawns.Contains(pawn.thingIDNumber)).ToList();
             // The game sends the caravan's letter and spawns its pawns before it looks for the spot they wait
@@ -140,7 +171,7 @@ namespace RiMCP.Command
                 Dto.Field("arrivedPawns", arrived.Count == 0 ? null : (object)arrived.Count),
                 Dto.Field("traderIds", traders.Count == 0 ? null : traders.ToArray()),
                 Dto.Field("recoveredLord", recovered ? (object)true : null),
-                Dto.Field("reason", fired ? null : "The game could not set the incident up (for example no faction could send it, or the points were too low for any group)." + (letters.Count == 0 ? "" : " It sent its letter before giving up, so the letter below announces nothing that is on the map.")));
+                Dto.Field("reason", fired ? null : "The game could not set the incident up (for example no faction could send it, or the points were too low for any group)." + (letters.Count == 0 ? "" : " It sent its letter before giving up, so the letter below announces nothing that is on the map.") + (incident == TraderCaravan && arrived.Any(pawn => pawn.Spawned && pawn.GetLord() == null) ? " The caravan's pawns are on the map with no lord (arrivedPawns), so they only wander; they will leave or can be dismissed." : "")));
             return new CommandResult(fired, data);
         }
 

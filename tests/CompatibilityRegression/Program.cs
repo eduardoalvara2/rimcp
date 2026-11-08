@@ -305,6 +305,7 @@ internal static class Program
         Test("the trade tools reach their handlers on their routes and groups, and document the tradeable key", CheckTradeTools);
         Test("fire_incident reaches its handler in the game settings group and offers exactly the allow-listed incidents", CheckIncidentTool);
         Test("trade tools refuse bad input before anything runs, and each needs a loaded game", CheckTradeInputs);
+        Test("goods a deal brings are read from the map under their own def, minified boxes and grown stacks included", CheckTradeArrivals);
         Test("a bought item that merged into an existing stack is an arrival, and goods that never come are not", CheckTradeArrival);
         Test("tradeable keys are def, stuff and quality, with a thing number where tradeables share one, and stay the same in a freshly built deal", CheckTradeKeys);
         Test("a trade session puts the game's statics back as it found them and is not blocked by a stale trader", CheckTradeSessionLifecycle);
@@ -3287,6 +3288,37 @@ internal static class Program
         Check(gains["Pemmican"] == 3 && gains["Silver"] == 144 && !gains.ContainsKey("MealSurvivalPack") && gains.Count == 2, "gains: " + string.Join(", ", gains.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
     }
 
+    // The goods a deal brings are read by the production Snapshot code, which must see a minified purchase
+    // under the item's own def, as the tradeable names it, and a stack that grew as a gain.
+    private static void CheckTradeArrivals()
+    {
+        Type snapshot = mod.GetType("RiMCP.Command.TradeCommandService+Snapshot", true);
+        MethodInfo of = snapshot.GetMethod("Of", Static);
+        MethodInfo arrivals = snapshot.GetMethod("Arrivals", Static);
+        Func<string, int, int, Thing> item = (def, id, count) => TradeThing(def, id, count, -1);
+        MinifiedThing table = (MinifiedThing)FormatterServices.GetUninitializedObject(typeof(MinifiedThing));
+        table.def = NamedDef("MinifiedThing");
+        table.thingIDNumber = 40;
+        table.stackCount = 1;
+        ThingOwner<Thing> holder = new ThingOwner<Thing>();
+        holder.TryAdd(item("Table2x2c", 41, 1), false);
+        typeof(MinifiedThing).GetField("innerContainer", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(table, holder);
+        Check(ReferenceEquals(table.GetInnerIfMinified(), holder[0]), "the test's minified thing holds its table");
+
+        Thing pemmican = item("Pemmican", 1, 10);
+        Thing meal = item("MealSurvivalPack", 2, 30);
+        object before = of.Invoke(null, new object[] { new Thing[] { pemmican, meal } });
+        // After: pemmican grew 10 to 13, the meals shrank, a table in a minified box and silver are new.
+        Thing grown = item("Pemmican", 1, 13);
+        Thing fewer = item("MealSurvivalPack", 2, 20);
+        Thing silver = item("Silver", 3, 144);
+        object found = arrivals.Invoke(null, new object[] { new Thing[] { grown, fewer, silver, table }, before });
+        Func<string, int> gained = def => (int)found.GetType().GetMethod("GainedOnMap").Invoke(found, new object[] { def });
+        Check(gained("Pemmican") == 3, "a stack that grew gained the difference: " + gained("Pemmican"));
+        Check(gained("Silver") == 144 && gained("MealSurvivalPack") == 0, "new stacks count in full and shrunk ones for nothing");
+        Check(gained("Table2x2c") == 1 && gained("MinifiedThing") == 0, "a minified purchase counts under the table's own def, which is what a tradeable's def is");
+    }
+
     private static void CheckTradeInputs()
     {
         Func<string, object> execute = body => Invoke("RiMCP.Command.TradeCommandService", "ExecuteTrade", Request("/v1/trade", "POST", body), Route());
@@ -3342,6 +3374,7 @@ internal static class Program
         ThingDef def = Blank<ThingDef>();
         def.defName = defName;
         def.stackLimit = stackLimit;
+        def.category = ThingCategory.Item;
         return def;
     }
 
@@ -3375,7 +3408,7 @@ internal static class Program
                 Tradeables(new Thing[] { TradeThing("MeleeWeapon_LongSword", 5, 1, changed ? 95 : 40, "Steel", QualityCategory.Normal) }, new Thing[0]),
                 Tradeables(new Thing[0], new Thing[] { TradeThing("MeleeWeapon_LongSword", 6, 1, changed ? 30 : 90, "Steel", QualityCategory.Normal), TradeThing("MeleeWeapon_LongSword", 10, 1, 90, "Steel", QualityCategory.Normal) }),
                 Tradeables(new Thing[0], new Thing[] { TradeThing("Gold", 7, 30, -1) }),
-                Tradeables(new Thing[0], new Thing[] { TradeThing("Apparel_Hat", 8, 1, 60, null, null, 1) })
+                Tradeables(new Thing[] { TradeThing("Apparel_Hat", 2, 1, 60, null, null, 1) }, new Thing[] { TradeThing("Apparel_Hat", 8, 1, 60, null, null, 1) })
             };
             if (changed)
             {
@@ -3391,7 +3424,7 @@ internal static class Program
             foreach (object row in rows)
             {
                 Tradeable tradeable = Field<Tradeable>(row, "Tradeable");
-                result[Field<string>(row, "Key")] = tradeable.thingsColony.Concat(tradeable.thingsTrader).Min(thing => thing.thingIDNumber);
+                result[Field<string>(row, "Key")] = (tradeable.thingsTrader.Count > 0 ? tradeable.thingsTrader : tradeable.thingsColony).Min(thing => thing.thingIDNumber);
             }
             Check(result.Count == rows.Count, "every row has its own key");
             return result;
@@ -3401,7 +3434,7 @@ internal static class Program
         Check(first.Count == again.Count && first.All(pair => again.ContainsKey(pair.Key) && again[pair.Key] == pair.Value), "keys name the same goods in a freshly built deal, reordered, with other hit points: " + string.Join(", ", first.Keys));
         var wanted = new Dictionary<string, int>
         {
-            { "Steel", 1 }, { "Gold", 7 }, { "Apparel_Parka:Leather_Wolf@Good", 3 }, { "Apparel_Parka:Leather_Wolf@Normal", 4 },
+            { "Steel", 2 }, { "Gold", 7 }, { "Apparel_Parka:Leather_Wolf@Good", 3 }, { "Apparel_Parka:Leather_Wolf@Normal", 4 },
             { "Apparel_Hat#8", 8 }, { "MeleeWeapon_LongSword:Steel@Normal#5", 5 }, { "MeleeWeapon_LongSword:Steel@Normal#6", 6 }
         };
         Check(first.Count == wanted.Count && wanted.All(pair => first.ContainsKey(pair.Key) && first[pair.Key] == pair.Value), "keys are def[:stuff][@quality], with the lowest thing number where several tradeables share one or an item never stacks: " + string.Join(", ", first.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
@@ -3426,9 +3459,10 @@ internal static class Program
         Check(find("MeleeWeapon_LongSword:Steel@Good#6") == null && find("MeleeWeapon_LongSword:Steel@Normal#99") == null, "a number only finds the key it belongs to");
         Check(find("pawn:Muffalo99") == null && find("Steel") == null && find(null) == null && find("  ") == null, "an unknown key finds nothing");
 
-        // What is left of a tradeable after a deal is found through whichever of its things survived.
-        MethodInfo containing = mod.GetType("RiMCP.Read.TradeSupport", true).GetMethod("RowsContaining", Static);
-        Check(((IList)containing.Invoke(null, new object[] { rowsList, new HashSet<int> { 11 } })).Count == 1 && ((IList)containing.Invoke(null, new object[] { rowsList, new HashSet<int> { 99 } })).Count == 0, "a tradeable is found again through any remaining thing");
+        // What a deal left is counted over the planned things only, wherever the game regrouped them.
+        Func<int[], bool, int> countOf = (ids, traderSide) => (int)Invoke("RiMCP.Read.TradeSupport", "CountOf", rowsList, new HashSet<int>(ids), traderSide);
+        Check(countOf(new[] { 10, 11 }, false) == 2 && countOf(new[] { 11 }, false) == 1 && countOf(new[] { 99 }, false) == 0, "colony-side things are counted by their numbers");
+        Check(countOf(new[] { 6, 10 }, true) == 2 && countOf(new[] { 6 }, true) == 1 && countOf(new[] { 11 }, true) == 0, "trader-side things are counted by their numbers, and the other side's are not");
     }
 
     // A trade session is the game's statics for as long as the call lasts, and the game never clears
@@ -3497,18 +3531,18 @@ internal static class Program
         Check(!(bool)Invoke("RiMCP.Command.TradeCommandService", "SilverVerified", 500, 500, -120), "silver that did not move does not verify");
     }
 
-    // fire_incident is off by default, refuses before anything else is looked at, works only in the colony
-    // the player named, and no tool can turn it on.
+    // fire_incident is off by default, refuses before anything else is looked at, works only in the world
+    // the player allowed, and no tool can turn it on.
     private static void CheckIncidentGate()
     {
         Type runtime = mod.GetType("RiMCP.Bridge.BridgeRuntime", true);
         FieldInfo settingsField = runtime.GetField("settings", Static);
         Type settingsType = mod.GetType("RiMCP.Settings.RiMCPSettings", true);
         object settings = Activator.CreateInstance(settingsType);
-        FieldInfo colonyField = settingsType.GetField("TestIncidentColony");
-        Check(string.IsNullOrEmpty((string)colonyField.GetValue(settings)), "test incidents name no colony in new settings");
+        FieldInfo worldField = settingsType.GetField("TestIncidentWorld");
+        Check((int)worldField.GetValue(settings) == 0, "test incidents allow no world in new settings");
         Func<string, object> fire = body => Invoke("RiMCP.Command.IncidentCommandService", "FireIncident", Request("/v1/incidents", "POST", body), Route());
-        Func<string> colony = () => (string)runtime.GetProperty("TestIncidentColony", Static).GetValue(null);
+        Func<int> world = () => (int)runtime.GetProperty("TestIncidentWorld", Static).GetValue(null);
         Action<string, Action> refused = (what, call) =>
         {
             try { call(); }
@@ -3525,25 +3559,23 @@ internal static class Program
         try
         {
             settingsField.SetValue(null, null);
-            Check(colony() == null, "with no settings loaded no colony is allowed");
+            Check(world() == 0, "with no settings loaded no world is allowed");
             refused("a call with no settings", () => fire("{\"incident\":\"RaidEnemy\",\"expectedLoadId\":\"x\"}"));
             settingsField.SetValue(null, settings);
-            Check(colony() == null, "with no colony named none is allowed");
-            refused("a raid with no colony named", () => fire("{\"incident\":\"RaidEnemy\",\"points\":80,\"requestId\":\"x\",\"expectedLoadId\":\"x\"}"));
+            Check(world() == 0, "with no world allowed none is");
+            refused("a raid with no world allowed", () => fire("{\"incident\":\"RaidEnemy\",\"points\":80,\"requestId\":\"x\",\"expectedLoadId\":\"x\"}"));
             refused("an incident outside the allowlist while off", () => fire("{\"incident\":\"Disease_Flu\"}"));
             refused("an empty call while off", () => fire("{}"));
-            colonyField.SetValue(settings, "   ");
-            refused("a blank colony name", () => fire("{\"incident\":\"RaidEnemy\",\"expectedLoadId\":\"x\"}"));
 
             // Through the router, with every group on, the closed gate still refuses.
             MethodInfo handle = mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetMethod("Handle", Static);
             object response = handle.Invoke(null, new[] { Request("/v1/incidents", "POST", "{\"incident\":\"TraderCaravanArrival\"}") });
             Check((int)response.GetType().GetField("StatusCode").GetValue(response) == 403 && ((string)response.GetType().GetField("Body").GetValue(response)).Contains("testing only"), "the router refuses fire_incident while it is off");
 
-            // With a colony named, the call is looked at: expectedLoadId, only the allowlist, points only
-            // for a raid, a loaded game, and then the colony itself.
-            colonyField.SetValue(settings, " Sandbox ");
-            Check(colony() == "Sandbox", "the named colony is trimmed");
+            // With a world allowed, the call is looked at: expectedLoadId, only the allowlist, points only
+            // for a raid, a loaded game, and then the world itself.
+            worldField.SetValue(settings, 1234567);
+            Check(world() == 1234567, "the allowed world is the one set");
             ExpectCommandError(400, () => fire("{\"expectedLoadId\":\"x\"}"));
             ExpectCommandError(400, () => fire("{\"incident\":\"Disease_Flu\",\"expectedLoadId\":\"x\"}"));
             ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\"}"));
@@ -3558,10 +3590,11 @@ internal static class Program
             settingsField.SetValue(null, saved);
         }
 
-        // The colony rule: the colony the player typed, any case, and no other.
-        Func<string, string, bool> allowed = (named, current) => (bool)Invoke("RiMCP.Command.IncidentCommandService", "ColonyAllowed", named, current);
-        Check(allowed("Sandbox", "sandbox") && allowed(" Sandbox ", "Sandbox"), "the named colony is allowed, by name as typed");
-        Check(!allowed("Sandbox", "Heouristan") && !allowed("Sandbox", null) && !allowed(null, "Sandbox") && !allowed("", "") && !allowed(" ", " "), "any other colony, an unnamed one, or no colony named is refused");
+        // The world rule: the world the player allowed, by its saved random value, and no other; a colony's
+        // name, which a naming dialog can set, plays no part.
+        Func<int, int, bool> allowed = (named, current) => (bool)Invoke("RiMCP.Command.IncidentCommandService", "WorldAllowed", named, current);
+        Check(allowed(1234567, 1234567) && allowed(-5, -5), "the allowed world is allowed");
+        Check(!allowed(1234567, 7654321) && !allowed(0, 0) && !allowed(0, 1234567) && !allowed(1234567, 0), "any other world, an unknown one, or none allowed is refused");
 
         // Nothing an agent can call carries the setting: no schema names it, and the settings
         // object is read by the gate and written only by the settings window.
@@ -3569,7 +3602,7 @@ internal static class Program
         {
             if (Field<Dictionary<string, object>>(spec, "InputSchema").ContainsKey("properties"))
             {
-                Check(!ToolProperties(spec).Keys.Any(key => key.IndexOf("testIncidentColony", StringComparison.OrdinalIgnoreCase) >= 0), Field<string>(spec, "Name") + " must not take the incident setting");
+                Check(!ToolProperties(spec).Keys.Any(key => key.IndexOf("testIncident", StringComparison.OrdinalIgnoreCase) >= 0), Field<string>(spec, "Name") + " must not take the incident setting");
             }
         }
         Check(!Field<string[]>(Tool("set_game_settings"), "BodyKeys").Any(key => key.IndexOf("incident", StringComparison.OrdinalIgnoreCase) >= 0), "set_game_settings does not reach the incident setting");

@@ -26,10 +26,13 @@ namespace RiMCP.Settings
         public bool UnattendedSetup;
         // Mods' right-click options and buttons, which RimMCP cannot check before they run.
         public bool AllowModActions = true;
-        // The one colony (the player faction's name) in which fire_incident may start incidents on demand.
-        // For testing only, so empty (off) by default, and changed only by the player, in the settings
-        // window or the settings file: a game of any other colony is refused.
-        public string TestIncidentColony;
+        // The one world (its persistentRandomValue, which the game saves with the world and nothing an
+        // agent can reach changes) in which fire_incident may start incidents on demand; 0 is off. For
+        // testing only, so off by default, and set only by the player with the button on the Safety tab
+        // while that colony is loaded, or in the settings file.
+        public int TestIncidentWorld;
+        // The colony's name when it was allowed, for display only.
+        public string TestIncidentColonyName;
         // Only read, to migrate settings saved before access presets.
         private bool legacyAllowChanges = true;
 
@@ -49,7 +52,8 @@ namespace RiMCP.Settings
             Scribe_Values.Look(ref Token, "token");
             Scribe_Values.Look(ref UnattendedSetup, "unattendedSetup", false);
             Scribe_Values.Look(ref AllowModActions, "allowModActions", true);
-            Scribe_Values.Look(ref TestIncidentColony, "testIncidentColony");
+            Scribe_Values.Look(ref TestIncidentWorld, "testIncidentWorld", 0);
+            Scribe_Values.Look(ref TestIncidentColonyName, "testIncidentColonyName");
         }
 
         internal string[] EnabledGroups
