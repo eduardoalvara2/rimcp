@@ -227,7 +227,7 @@ internal static class Program
         {
             IEnumerable tools = (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null);
             Dictionary<string, int> counts = tools.Cast<object>().GroupBy(tool => Field<string>(tool, "Group") ?? "(none)").ToDictionary(group => group.Key, group => group.Count());
-            var expected = new Dictionary<string, int> { { "observe", 43 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 4 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 1 }, { "gameSetup", 14 } };
+            var expected = new Dictionary<string, int> { { "observe", 43 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 4 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
             int count;
             Check(counts.Count == expected.Count && expected.All(pair => counts.TryGetValue(pair.Key, out count) && count == pair.Value),
                 "group sizes: " + string.Join(", ", counts.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
@@ -303,8 +303,10 @@ internal static class Program
         Test("growing zones count roofed cells, overhead mountain, and roofs waiting for removal", CheckRoofCounts);
         Test("get_map_view offers exactly its layers, and set_area names both roof areas", CheckRoofSchemas);
         Test("the trade tools reach their handlers on their routes and groups, and document the tradeable key", CheckTradeTools);
+        Test("fire_incident reaches its handler in the game settings group and offers exactly the allow-listed incidents", CheckIncidentTool);
         Test("trade tools refuse bad input before anything runs, and each needs a loaded game", CheckTradeInputs);
         Test("tradeable keys are def, stuff and quality, numbered by hit points, and stay the same in a freshly built deal", CheckTradeKeys);
+        Test("fire_incident is off by default, refuses before anything is looked at, and no tool can turn it on", CheckIncidentGate);
         Test("the Trade option and the trade ship call point to the trade tools instead of refusing", CheckTradeRefusalsPointToTools);
         Test("order_pawn and designate offer exactly the kinds they handle, and queue reaches the handler", () =>
         {
@@ -3240,6 +3242,23 @@ internal static class Program
         Check(readOnly("list_traders") && readOnly("get_trade") && !readOnly("execute_trade"), "the trade reads are reads and the deal is a write");
     }
 
+    // fire_incident: its route, group and schema, and exactly the allow-listed incidents.
+    private static void CheckIncidentTool()
+    {
+        IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
+        object spec = Tool("fire_incident");
+        Check(Field<string>(spec, "HandlerId") == "fire-incident" && Field<string>(spec, "Group") == "gameSettings" && Field<string>(spec, "Method") == "POST" && Field<string>(spec, "PathTemplate") == "/v1/incidents", "fire_incident is a POST in the game settings group");
+        Delegate handler = handlers["fire-incident"] as Delegate;
+        Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == "IncidentCommandService.FireIncident", "fire_incident must be handled by IncidentCommandService.FireIncident");
+        Check(Field<string[]>(spec, "BodyKeys").SequenceEqual(new[] { "mapId", "incident", "points", "requestId", "expectedLoadId" }), "fire_incident sends its fields in the body, with the load guard");
+        Check(ToolProperties(spec).ContainsKey("expectedLoadId") && ((string[])Field<Dictionary<string, object>>(spec, "InputSchema")["required"]).SequenceEqual(new[] { "incident" }), "fire_incident takes expectedLoadId and needs an incident");
+        Check(!(bool)Field<Dictionary<string, object>>(spec, "Annotations")["readOnlyHint"], "fire_incident is a write");
+        string[] offered = (string[])((Dictionary<string, object>)ToolProperties(Tool("fire_incident"))["incident"])["enum"];
+        string[] allowed = (string[])mod.GetType("RiMCP.Command.IncidentCommandService", true).GetField("Allowed", Static).GetValue(null);
+        Check(allowed.OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(new[] { "OrbitalTraderArrival", "RaidEnemy", "TraderCaravanArrival" }), "the allowlist is the two traders and the raid: " + string.Join(", ", allowed));
+        Check(offered.OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(allowed.OrderBy(name => name, StringComparer.Ordinal)), "fire_incident offers exactly its allowlist");
+    }
+
     private static void CheckTradeInputs()
     {
         Func<string, object> execute = body => Invoke("RiMCP.Command.TradeCommandService", "ExecuteTrade", Request("/v1/trade", "POST", body), Route());
@@ -3361,6 +3380,67 @@ internal static class Program
         Func<string, object> find = key => Invoke("RiMCP.Read.TradeSupport", "FindRow", rowsList, key);
         Check(ReferenceEquals(find("pawn:Muffalo10"), herd) && ReferenceEquals(find(" pawn:Muffalo11 "), herd), "a pawn key finds its group by any member");
         Check(find("pawn:Muffalo99") == null && find("Steel") == null && find(null) == null, "an unknown key finds nothing");
+    }
+
+    // fire_incident is off by default, refuses before anything else is looked at, and no tool can turn it on.
+    private static void CheckIncidentGate()
+    {
+        Type runtime = mod.GetType("RiMCP.Bridge.BridgeRuntime", true);
+        FieldInfo settingsField = runtime.GetField("settings", Static);
+        Type settingsType = mod.GetType("RiMCP.Settings.RiMCPSettings", true);
+        object settings = Activator.CreateInstance(settingsType);
+        FieldInfo allow = settingsType.GetField("AllowTestIncidents");
+        Check(!(bool)allow.GetValue(settings), "test incidents are off in new settings");
+        Func<string, object> fire = body => Invoke("RiMCP.Command.IncidentCommandService", "FireIncident", Request("/v1/incidents", "POST", body), Route());
+        Func<bool> allowed = () => (bool)runtime.GetProperty("TestIncidentsAllowed", Static).GetValue(null);
+        object saved = settingsField.GetValue(null);
+        try
+        {
+            settingsField.SetValue(null, null);
+            Check(!allowed(), "with no settings loaded the gate is closed");
+            ExpectCommandError(403, () => fire("{\"incident\":\"RaidEnemy\"}"));
+            settingsField.SetValue(null, settings);
+            Check(!allowed(), "with the setting off the gate is closed");
+            ExpectCommandError(403, () => fire("{\"incident\":\"RaidEnemy\",\"points\":80,\"requestId\":\"x\"}"));
+            ExpectCommandError(403, () => fire("{\"incident\":\"Disease_Flu\"}"));
+            try { fire("{}"); }
+            catch (Exception e)
+            {
+                while (e is TargetInvocationException && e.InnerException != null) e = e.InnerException;
+                Check(e.Message.Contains("testing only") && e.Message.Contains("Nothing was sent to the game"), "the refusal says why: " + e.Message);
+            }
+
+            // Through the router, with every group on, the closed gate still refuses.
+            MethodInfo handle = mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetMethod("Handle", Static);
+            object response = handle.Invoke(null, new[] { Request("/v1/incidents", "POST", "{\"incident\":\"TraderCaravanArrival\"}") });
+            Check((int)response.GetType().GetField("StatusCode").GetValue(response) == 403 && ((string)response.GetType().GetField("Body").GetValue(response)).Contains("testing only"), "the router refuses fire_incident while it is off");
+
+            // With it on, the call is looked at: only the allowlist, points only for a raid, and a loaded game.
+            allow.SetValue(settings, true);
+            Check(allowed(), "with the setting on the gate opens");
+            ExpectCommandError(400, () => fire("{}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"Disease_Flu\"}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"TraderCaravanArrival\",\"points\":50}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\",\"points\":0}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\",\"points\":5001}"));
+            ExpectCommandError(409, () => fire("{\"incident\":\"RaidEnemy\",\"points\":80}"));
+            ExpectCommandError(409, () => fire("{\"incident\":\"orbitaltraderarrival\"}"));
+        }
+        finally
+        {
+            settingsField.SetValue(null, saved);
+        }
+
+        // Nothing an agent can call carries the setting: no schema names it, and the settings
+        // object is read by the gate and written only by the settings window.
+        foreach (object spec in (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null))
+        {
+            if (Field<Dictionary<string, object>>(spec, "InputSchema").ContainsKey("properties"))
+            {
+                Check(!ToolProperties(spec).Keys.Any(key => key.IndexOf("allowTestIncidents", StringComparison.OrdinalIgnoreCase) >= 0), Field<string>(spec, "Name") + " must not take the incident setting");
+            }
+        }
+        Check(!Field<string[]>(Tool("set_game_settings"), "BodyKeys").Any(key => key.IndexOf("incident", StringComparison.OrdinalIgnoreCase) >= 0), "set_game_settings does not reach the incident setting");
     }
 
     // The two refusals that used to say agents cannot trade now point to the tools that can.

@@ -37,6 +37,12 @@ namespace RiMCP.Bridge
             get { return settings == null || settings.AllowModActions; }
         }
 
+        // Off unless the player turned it on, and also while no settings are loaded.
+        public static bool TestIncidentsAllowed
+        {
+            get { return settings != null && settings.AllowTestIncidents; }
+        }
+
         public static bool IsRunning
         {
             get { return server != null && server.IsRunning; }

@@ -36,6 +36,7 @@ namespace RiMCP.Bridge
             { "traders", TradeReadService.ListTraders },
             { "trade", TradeReadService.GetTrade },
             { "execute-trade", TradeCommandService.ExecuteTrade },
+            { "fire-incident", IncidentCommandService.FireIncident },
             { "work", WorkReadService.ListWork },
             { "production", ProductionReadService.ListProduction },
             { "bill", ProductionReadService.GetBill },

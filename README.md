@@ -26,6 +26,7 @@ Current MCP tools:
 | Health and mechs | `list_surgeries`, `add_surgery_bill`, `get_mechanitor`, `set_mech_control` | Queue operations as a pawn's Health tab does, with its recipes, body parts, disabled options and confirmations, and warnings such as no doctor with the skills or no medical bed; and see a mechanitor's bandwidth and control groups, move overseen mechs between groups, and set a group's work mode (Work, Escort, Recharge, Self-shutdown), as the Mechs tab and control group buttons do. |
 | Animals | `designate_animal`, `set_animal_training` | Set hunt/tame/slaughter designations and colony animal training flags. |
 | Research and ideology | `get_research`, `set_research_project`, `list_ideoligions`, `get_ideoligion` | Inspect or choose research, see what stops it progressing, and inspect Ideology data when the expansion is active. A project that cannot start yet is refused naming what it needs, such as its prerequisites, a research bench, or a mechanitor, and `get_def` shows each start requirement. |
+| Test incidents | `fire_incident` | For testing only, and off unless you turn it on (see **Test incidents** below): fire a trade caravan, an orbital trader or a small raid on the map now, so a colony can practise trading or capturing a downed raider. Nothing else can be fired. |
 | Time | `set_game_speed`, `advance_time`, `get_advance` | Pause or set the speed, or run the game for a set time, from 25 ticks to 24 in-game hours, and pause again. A run stops early on deaths, colonists who would die of blood loss within 6 in-game hours, downed or injured colonists, starving colonists, colonists stuck where they cannot reach a bed or food, mental breaks, fires in the Home area, hostiles, low food, or threat letters, and reports what happened. It is refused while a window pauses the game, naming it, and `get_advance` lists the windows holding time. |
 | Events and decisions | `get_events`, `list_quests`, `answer_letter`, `respond_to_quest`, `answer_dialog`, `list_dialogs`, `dismiss_dialog` | See what the game is telling the player: alerts with the pawns, things, or places they concern, letters waiting with a choice letter's options, and the History tab's letters and messages, page by page from where the agent last read. Quests are listed as the Quests tab shows them, with whether each offer can be accepted, its rewards, and who can accept it. Answer letters and accept, dismiss, or restore quests through the game's own dialogs and checks; a question that follows, such as an "are you sure?", is answered page by page, and stays on screen so the player can answer it instead. Decisions show in game. Dialogs the game opens on its own, such as a scenario's intro, are listed too: those RimMCP can read are answered with `answer_dialog` (with Decisions on), including the game's question to name the faction and settlement, answered with the names under the dialog's own rules, and mods' windows with a close control, such as update notices, are closed with `dismiss_dialog`. Windows the player just opened, their own windows and what opens over them, and confirmations that cannot be undone stay the player's. |
 | World and defs | `list_world`, `search_defs`, `get_def` | Inspect factions, world objects, and loaded definitions with their defining mod when known. |
@@ -65,6 +66,15 @@ The MCP proxy mirrors the structuredContent JSON in text content for clients tha
 
 If you want MCP to work while RimWorld is alt-tabbed or minimized, enable RimWorld's **Run in background** setting. Otherwise requests will timeout when the game is not in focus.
 
+### Test incidents (off by default)
+
+`fire_incident` fires one allow-listed incident (`TraderCaravanArrival`, `OrbitalTraderArrival` or `RaidEnemy`, with optional `points`, default 60) on demand. It is for testing only, so it is gated behind a mod setting that is off by default: while it is off, the tool refuses with a clear reason and nothing reaches the game. No tool can switch the setting on; only you can, and the tool also needs the **Game settings** group (on with Full control, off with Control).
+
+To turn it on, either:
+
+- tick **Allow test incidents (testing only)** on the **Safety** tab of the RimMCP mod settings, or
+- with RimWorld closed, add `<allowTestIncidents>True</allowTestIncidents>` inside the `<ModSettings Class="RiMCP.Settings.RiMCPSettings">` block of the mod's settings file in RimWorld's Config folder. On Windows that is `%USERPROFILE%\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Config\`, and the file is `Mod_RiMCP_RiMCPMod.xml` for a copy installed as `Mods/RiMCP` (the local build) or `Mod_3809698070_RiMCPMod.xml` for the Workshop copy. The key is absent when the setting is off; setting it to `False` or deleting the line turns it off again.
+
 Current command HTTP endpoints:
 
 - `PUT /v1/pawns/{pawnId}/drafted`
@@ -84,6 +94,7 @@ Current command HTTP endpoints:
 - `POST /v1/pawns/{pawnId}/orders`
 - `GET /v1/traders`
 - `GET /v1/trade` and `POST /v1/trade`
+- `POST /v1/incidents` (refused unless Allow test incidents is on)
 
 ## Building From Source
 
