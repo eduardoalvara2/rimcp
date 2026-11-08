@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.0+rimplayer.3 (rimplayer fork) - 2026-11-08
+
+### Added
+
+- A pawn another pawn carries, such as a downed colonist being rescued or carried off by kidnappers, is not spawned while carried, so `list_pawns` left it out and `get_pawn` answered `Pawn not found.`. Both now find it, at its carrier's position, with `carriedBy` (the carrier's ids, name and role). Commands still act only on spawned pawns.
+- `get_pawn` for a pawn that is not on the map says, when it can, where the pawn is instead: dead with the corpse on this map, on another map (pass `mapId`), kidnapped by a faction, in a caravan, or on no map. Pawns under fog stay `Pawn not found.`.
+- Not yet tried in game: a carried pawn's read. The regression suite does not cover it, as it needs a map.
+
 ## 1.1.0+rimplayer.2 (rimplayer fork) - 2026-11-08
 
 A fork of RimMCP 1.1.0 at `eduardoalvara2/rimcp`, branch `rimplayer`, for the rimplayer project. It keeps the package id `rakanssh.rimcp`, so saves keep matching; its versions are upstream's 1.1.0 with `+rimplayer.N` (the DLL's assembly version stays 1.1.0.0), and the mod list names it RimMCP (rimplayer fork) to tell it from the Workshop copy.

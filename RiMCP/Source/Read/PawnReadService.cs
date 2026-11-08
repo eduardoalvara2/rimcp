@@ -54,10 +54,10 @@ namespace RiMCP.Read
             ReadContext context = ReadContext.FromMap(request);
             string id = route["id"];
 
-            Pawn pawn = FindPawn(context.Map, id);
+            Pawn pawn = string.IsNullOrWhiteSpace(id) ? null : PawnsOnMap(context.Map).FirstOrDefault(p => IsPawn(p, id) && Visible(context.Map, p));
             if (pawn == null)
             {
-                return BridgeResponse.Error(404, "Pawn not found.");
+                return BridgeResponse.Error(404, NotFound(context.Map, id));
             }
 
             return ReadEnvelope.Ok(context, SerializePawn(pawn, RoleForPawn(context.Map, pawn), ReadDetail.Full, context.Request));
@@ -65,18 +65,112 @@ namespace RiMCP.Read
 
         // Pawns under fog, such as insects or sleeping mechanoids in an unopened ancient shrine, are
         // hidden from the player, so every pawn read, and anything said about a pawn, leaves them out.
+        // A carried pawn is where its carrier is.
         public static bool Visible(Map map, Pawn pawn)
         {
-            return !pawn.Position.Fogged(map);
+            return !pawn.PositionHeld.Fogged(map);
         }
 
+        // Spawned pawns only, for commands, which act on pawns that are on the ground.
         public static Pawn FindPawn(Map map, string id)
         {
             if (map == null || string.IsNullOrWhiteSpace(id))
             {
                 return null;
             }
-            return map.mapPawns.AllPawnsSpawned.FirstOrDefault(p => (p.ThingID == id || p.GetUniqueLoadID() == id) && Visible(map, p));
+            return map.mapPawns.AllPawnsSpawned.FirstOrDefault(p => IsPawn(p, id) && Visible(map, p));
+        }
+
+        private static bool IsPawn(Pawn pawn, string id)
+        {
+            return pawn.ThingID == id || pawn.GetUniqueLoadID() == id;
+        }
+
+        // The pawns reads list: those spawned, and those a spawned pawn carries, such as a downed
+        // colonist being rescued or kidnapped, who are not spawned while carried.
+        public static IEnumerable<Pawn> PawnsOnMap(Map map)
+        {
+            if (map == null)
+            {
+                yield break;
+            }
+            List<Pawn> spawned = map.mapPawns.AllPawnsSpawned.ToList();
+            foreach (Pawn pawn in spawned)
+            {
+                yield return pawn;
+            }
+            foreach (Pawn carrier in spawned)
+            {
+                Pawn carried = carrier.carryTracker == null ? null : carrier.carryTracker.CarriedThing as Pawn;
+                if (carried != null && !carried.Dead)
+                {
+                    yield return carried;
+                }
+            }
+        }
+
+        // Where a pawn not on this map is, when the player could know: dead with the corpse here, on
+        // another map, kidnapped, in a caravan, or on no map. Pawns under fog stay unknown, and so
+        // does any pawn this cannot read: a not found never fails.
+        public static string NotFound(Map map, string id)
+        {
+            const string unknown = "Pawn not found.";
+            if (string.IsNullOrWhiteSpace(id) || Current.Game == null)
+            {
+                return unknown;
+            }
+            try
+            {
+                return Whereabouts(map, id) ?? unknown;
+            }
+            catch
+            {
+                return unknown;
+            }
+        }
+
+        private static string Whereabouts(Map map, string id)
+        {
+            Corpse corpse = map == null ? null : map.listerThings.ThingsInGroup(ThingRequestGroup.Corpse)
+                .OfType<Corpse>()
+                .FirstOrDefault(each => each.InnerPawn != null && IsPawn(each.InnerPawn, id) && !each.Position.Fogged(map));
+            if (corpse != null)
+            {
+                return "Pawn not found: " + Named(corpse.InnerPawn) + " is dead; the corpse is at " + corpse.Position.x + "," + corpse.Position.z + ".";
+            }
+            foreach (Map other in Find.Maps.Where(other => other != map))
+            {
+                Pawn there = PawnsOnMap(other).FirstOrDefault(p => IsPawn(p, id) && Visible(other, p));
+                if (there != null)
+                {
+                    return "Pawn not found on this map: " + Named(there) + " is on map " + other.uniqueID + "; pass mapId to read it.";
+                }
+            }
+            Pawn pawn = PawnsFinder.AllMapsWorldAndTemporary_AliveOrDead.FirstOrDefault(p => p != null && IsPawn(p, id));
+            if (pawn == null || pawn.MapHeld != null)
+            {
+                return null;
+            }
+            if (pawn.Dead)
+            {
+                return "Pawn not found: " + Named(pawn) + " is dead.";
+            }
+            Faction kidnapper = Find.FactionManager.AllFactionsListForReading.FirstOrDefault(faction => faction.kidnapped != null && faction.kidnapped.KidnappedPawnsListForReading.Contains(pawn));
+            if (kidnapper != null)
+            {
+                return "Pawn not found: " + Named(pawn) + " was kidnapped by " + kidnapper.Name + " and is on no map.";
+            }
+            RimWorld.Planet.Caravan caravan = RimWorld.Planet.CaravanUtility.GetCaravan(pawn);
+            if (caravan != null)
+            {
+                return "Pawn not found: " + Named(pawn) + " is in the caravan " + caravan.Label + ", on the world map.";
+            }
+            return "Pawn not found: " + Named(pawn) + " is on no map; they left it or were taken off it.";
+        }
+
+        private static string Named(Pawn pawn)
+        {
+            return ReadUtil.PawnName(pawn) + " (" + pawn.ThingID + ")";
         }
 
         public static IEnumerable<PawnRole> PawnsForFilter(Map map, string filter)
@@ -87,7 +181,7 @@ namespace RiMCP.Read
             }
 
             string normalized = (filter ?? "core").ToLowerInvariant();
-            foreach (Pawn pawn in map.mapPawns.AllPawnsSpawned)
+            foreach (Pawn pawn in PawnsOnMap(map))
             {
                 if (!Visible(map, pawn))
                 {
@@ -118,15 +212,17 @@ namespace RiMCP.Read
             {
                 return "hostile";
             }
-            if (map.mapPawns.FreeColonistsSpawned.Contains(pawn))
+            // A carried pawn is in none of the map's spawned lists, so it is checked as they are built.
+            bool spawned = pawn.Spawned;
+            if (spawned ? map.mapPawns.FreeColonistsSpawned.Contains(pawn) : pawn.Faction == Faction.OfPlayer && pawn.HostFaction == null && pawn.RaceProps != null && pawn.RaceProps.Humanlike && !(ModsConfig.AnomalyActive && pawn.IsSubhuman))
             {
                 return "colonist";
             }
-            if (map.mapPawns.SlavesOfColonySpawned.Contains(pawn))
+            if (spawned ? map.mapPawns.SlavesOfColonySpawned.Contains(pawn) : pawn.IsSlaveOfColony)
             {
                 return "slave";
             }
-            if (map.mapPawns.PrisonersOfColonySpawned.Contains(pawn))
+            if (spawned ? map.mapPawns.PrisonersOfColonySpawned.Contains(pawn) : pawn.IsPrisonerOfColony)
             {
                 return "prisoner";
             }
@@ -158,7 +254,14 @@ namespace RiMCP.Read
             dto["downed"] = pawn.Downed;
             dto["dead"] = pawn.Dead;
             dto["drafted"] = pawn.Drafted;
-            dto["position"] = ReadUtil.Cell(pawn.Position);
+            dto["position"] = ReadUtil.Cell(pawn.PositionHeld);
+            Pawn carrier = pawn.Spawned ? null : pawn.CarriedBy;
+            if (carrier != null)
+            {
+                Dictionary<string, object> carriedBy = SummaryDto.Pawn(carrier);
+                carriedBy["role"] = carrier.Map == null ? "unknown" : RoleForPawn(carrier.Map, carrier);
+                dto["carriedBy"] = carriedBy;
+            }
             dto["mentalState"] = pawn.MentalStateDef == null ? null : pawn.MentalStateDef.defName;
             dto["currentJob"] = SerializeCurrentJob(pawn);
             object[] queuedJobs = SerializeQueuedJobs(pawn);
@@ -410,7 +513,7 @@ namespace RiMCP.Read
             Area area = pawn.playerSettings == null ? null : pawn.playerSettings.AreaRestrictionInPawnCurrentMap;
             return Dto.Obj(
                 Dto.Field("hours", hours),
-                Dto.Field("allowedArea", SerializeAllowedArea(area, pawn.Map)));
+                Dto.Field("allowedArea", SerializeAllowedArea(area, pawn.MapHeld)));
         }
 
         public static object SerializeAssignments(Pawn pawn)
@@ -428,7 +531,7 @@ namespace RiMCP.Read
                     Dto.Field("label", MedicalCareUtility.GetLabel(settings.medCare)))),
                 Dto.Field("selfTend", settings == null ? (object)null : settings.selfTend),
                 Dto.Field("hostilityResponse", settings == null || !settings.UsesConfigurableHostilityResponse ? null : settings.hostilityResponse.ToString()),
-                Dto.Field("allowedArea", settings == null ? null : SerializeAllowedArea(settings.AreaRestrictionInPawnCurrentMap, pawn.Map)),
+                Dto.Field("allowedArea", settings == null ? null : SerializeAllowedArea(settings.AreaRestrictionInPawnCurrentMap, pawn.MapHeld)),
                 Dto.Field("carryMedicine", SerializeCarryMedicine(pawn)),
                 Dto.Field("prisonerInteraction", pawn.guest == null ? null : ReadUtil.Def(pawn.guest.ExclusiveInteractionMode)));
         }
