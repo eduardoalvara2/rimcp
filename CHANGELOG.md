@@ -2,9 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased (rimplayer fork)
+## 1.1.0+rimplayer.2 (rimplayer fork) - 2026-11-08
 
-A fork of RimMCP 1.1.0 at `eduardoalvara2/rimcp`, branch `rimplayer`, for the rimplayer project. It keeps the package id `rakanssh.rimcp`, so saves keep matching, and the mod version `1.1.0`; the mod list names it RimMCP (rimplayer fork) to tell it from the Workshop copy.
+A fork of RimMCP 1.1.0 at `eduardoalvara2/rimcp`, branch `rimplayer`, for the rimplayer project. It keeps the package id `rakanssh.rimcp`, so saves keep matching; its versions are upstream's 1.1.0 with `+rimplayer.N` (the DLL's assembly version stays 1.1.0.0), and the mod list names it RimMCP (rimplayer fork) to tell it from the Workshop copy.
+
+### Added
+
+- `list_dialogs` lists the game's question to name the faction and settlement (`Dialog_NamePlayerFactionAndSettlement`, or `Dialog_NamePlayerFaction` or `Dialog_NamePlayerSettlement` when it asks for one name) as a naming dialog: kind `naming`, option `ok`, and `names`, with each field it asks `answer_dialog` for (`factionName`, `settlementName`), the text in its box (the game's suggestion), the longest name its own check takes (40 characters for a faction name, which also has to be a valid file name, and 64 for a settlement's), and the settlement's name now. `answer_dialog` answers it with those names: checked with the dialog's own rules before anything is typed, a refused name says which part of the check it failed and gives the game's message, and the names are then applied as its OK button does, with the dialog's own naming code, message and close, so the game does not ask again. In commitment mode the game renames the save then, as it does for the player. `dismiss_dialog` is unchanged, and the gravship's naming dialog (Odyssey) stays the player's.
+
+## 1.1.0+rimplayer.1 (rimplayer fork) - 2026-11-08
+
+Built as version 1.1.0.
 
 ### Added
 

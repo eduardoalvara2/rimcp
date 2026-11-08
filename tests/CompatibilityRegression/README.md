@@ -27,7 +27,7 @@ $env:NUGET_PACKAGES = Join-Path $PWD '.nuget/packages'
 dotnet restore tests/CompatibilityRegression/CompatibilityRegression.csproj --source $env:NUGET_PACKAGES "-p:RimWorldManagedPath=$managed"
 ```
 
-The eighty-four checks cover:
+The eighty-seven checks cover:
 
 - Main-menu research listing, definition lookup, and definition search, including
   absence of invented `finished`/`progress` values and blockers, and `availableOnly`
@@ -119,6 +119,16 @@ The eighty-four checks cover:
   code under earlier wrappers, and a dialog that cannot be read is left to the player.
   Listing and closing real windows, queuing surgeries, and changing control groups are
   live-game tests.
+- The game's faction and settlement naming dialogs, made without the game: read as naming
+  dialogs asking for the names their text boxes hold, with the longest name each takes (a
+  faction name is also a file name, so 40 characters), names checked with the dialogs' own
+  rules (empty, too long, characters a file name or the game's text markup cannot have)
+  and typed into the right box; the gravship's naming dialog left to the player; OK's own
+  steps naming the trimmed faction and settlement with the dialog's code (recorded by a
+  subclass), and naming nothing when its check refuses; and `answer_dialog` taking the
+  names in its body, refusing a missing name, a refused one, names with cancel, and names
+  for a dialog that asks for none before anything is typed or pressed. Naming a real
+  faction, its message, and closing the window are live-game tests.
 - Cell rectangles bounded, clipped to the map and de-duplicated; rejected cells
   all counted but listed up to a cap; and request ids: a retry returns the first
   result whatever its outcome (alreadySatisfied and rejected too) without the command

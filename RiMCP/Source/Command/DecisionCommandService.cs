@@ -52,9 +52,23 @@ namespace RiMCP.Command
                 throw new CommandException(400, "Field 'page' is required: the page the options were read from.");
             }
             int page = body.Page.Value;
+            // A naming dialog's names, by field.
+            Dictionary<string, string> names = new Dictionary<string, string>();
+            if (body.FactionName != null)
+            {
+                names[NamingDialogs.FactionName] = body.FactionName;
+            }
+            if (body.SettlementName != null)
+            {
+                names[NamingDialogs.SettlementName] = body.SettlementName;
+            }
+            if (cancel && names.Count > 0)
+            {
+                throw new CommandException(400, "Names answer a naming dialog with its option; leave them out to cancel.");
+            }
             string interactionId = route["interactionId"];
             // Receipt first, so a retry is answered even after the dialog is forgotten.
-            RequestKey key = RequestKey.For("answer_dialog", requestId, null, interactionId, page, body.Option, body.Value, cancel, body.AimId, body.AimX, body.AimZ);
+            RequestKey key = RequestKey.For("answer_dialog", requestId, null, interactionId, page, body.Option, body.Value, cancel, body.AimId, body.AimX, body.AimZ, body.FactionName, body.SettlementName);
             return CommandReceipts.Once(CommandUtil.ContextFor(null), key, () =>
             {
                 Interaction interaction = Interactions.Find(interactionId);
@@ -76,10 +90,14 @@ namespace RiMCP.Command
                 Map map = Current.Game == null ? null : Find.CurrentMap;
                 LocalTargetInfo aim = map == null ? LocalTargetInfo.Invalid : Targets.Parse(map, body.AimId, body.AimX, body.AimZ, "aim");
                 Action choose;
-                DialogOption chosen = Interactions.Prepare(interaction, page, body.Option, body.Value, out choose);
+                DialogOption chosen = Interactions.Prepare(interaction, page, body.Option, body.Value, names, out choose);
                 ActionOrigin origin = Interactions.OriginOf(interaction, chosen);
                 data["answered"] = chosen.Text;
                 data["origin"] = origin.Mod;
+                if (names.Count > 0)
+                {
+                    data["names"] = names.ToDictionary(pair => pair.Key, pair => (object)pair.Value.Trim());
+                }
                 Press.Execute(data, origin, interaction.Tool, interaction.Subject, interaction.Selected, map, aim, choose, () => Interactions.Settle(interaction), interaction);
                 return new CommandResult(true, data);
             });
@@ -161,7 +179,7 @@ namespace RiMCP.Command
                 origin = GameActions.Of(new[] { letter.GetType(), GameActions.OriginType(dialog.Callback(option)) });
                 Press.Check(origin);
                 interaction = Interactions.Start("answer_letter", label, dialog, null, origin);
-                Interactions.Prepare(interaction, interaction.Page, option.Id, null, out choose);
+                Interactions.Prepare(interaction, interaction.Page, option.Id, null, null, out choose);
             }
             catch
             {
@@ -428,6 +446,12 @@ namespace RiMCP.Command
 
             [DataMember(Name = "aimZ")]
             public int? AimZ { get; set; }
+
+            [DataMember(Name = "factionName")]
+            public string FactionName { get; set; }
+
+            [DataMember(Name = "settlementName")]
+            public string SettlementName { get; set; }
 
             [DataMember(Name = "requestId")]
             public string RequestId { get; set; }

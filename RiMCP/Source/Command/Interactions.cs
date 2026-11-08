@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using RimWorld;
 using RiMCP.Read;
 using UnityEngine;
 using Verse;
@@ -66,6 +67,13 @@ namespace RiMCP.Command
         // was still shows. Null where every answer closes the dialog or moves it on.
         public Func<int> Activations;
         public Action Arm;
+        // For a naming dialog: the answer_dialog fields it asks for (factionName, settlementName),
+        // what list_dialogs shows of them, the dialog's own check of a name, and typing one in.
+        // Null for every other dialog.
+        public Func<List<string>> NameFields;
+        public Func<object> Names;
+        public Func<string, string, string> NameRefusal;
+        public Action<string, string> SetName;
 
         // A dialog's own action under the counting wrappers adapters put around it, so a dialog
         // adapted again still finds the dialog's own code, a mod's included.
@@ -125,7 +133,37 @@ namespace RiMCP.Command
             {
                 return Slider(slider);
             }
+            Dialog_GiveName naming = window as Dialog_GiveName;
+            if (naming != null && NamingDialogs.Handles(naming))
+            {
+                return Naming(naming);
+            }
             return null;
+        }
+
+        // Answered as its OK button does, with the names given typed into its text boxes first.
+        private static DialogAdapter Naming(Dialog_GiveName dialog)
+        {
+            return new DialogAdapter
+            {
+                Kind = "naming",
+                Window = dialog,
+                IsOpen = () => Find.WindowStack.IsOpen(dialog),
+                PageKey = () => dialog,
+                Title = () => null,
+                Question = () => Clean(NamingDialogs.Question(dialog)),
+                Options = () => new List<DialogOption> { new DialogOption(NamingDialogs.Ok, 0, Clean(NamingDialogs.OkText()), null) },
+                NotReady = option => null,
+                CanCancel = () => false,
+                Choose = option => NamingDialogs.Answer(dialog),
+                Cancel = () => { },
+                Covered = () => Covers(dialog),
+                Callback = option => NamingDialogs.OwnCode(dialog),
+                NameFields = () => NamingDialogs.Fields(dialog),
+                Names = () => NamingDialogs.Describe(dialog),
+                NameRefusal = (field, name) => NamingDialogs.Refusal(dialog, field, name),
+                SetName = (field, name) => NamingDialogs.Type(dialog, field, name)
+            };
         }
 
         private static DialogAdapter Slider(Dialog_Slider slider)
@@ -501,7 +539,8 @@ namespace RiMCP.Command
         }
 
         // The option returned is the one showing now, checked against the page it was read from.
-        public static DialogOption Prepare(Interaction interaction, int page, string optionId, int? value, out Action choose)
+        // names gives a naming dialog's names by answer_dialog field, such as factionName.
+        public static DialogOption Prepare(Interaction interaction, int page, string optionId, int? value, IDictionary<string, string> names, out Action choose)
         {
             Require(interaction, page);
             DialogAdapter dialog = interaction.Dialog;
@@ -512,6 +551,27 @@ namespace RiMCP.Command
             if (dialog.SetValue != null && (!value.HasValue || value < dialog.Min || value > dialog.Max))
             {
                 throw new CommandException(400, "Give value, a count from " + dialog.Min + " to " + dialog.Max + ".");
+            }
+            Dictionary<string, string> given = names == null
+                ? new Dictionary<string, string>()
+                : names.Where(pair => pair.Value != null).ToDictionary(pair => pair.Key, pair => pair.Value);
+            List<string> asked = dialog.NameFields == null ? null : dialog.NameFields();
+            if (asked == null && given.Count > 0)
+            {
+                throw new CommandException(400, "This dialog takes no names; " + string.Join(" and ", given.Keys.ToArray()) + " answer a naming dialog.");
+            }
+            if (asked != null)
+            {
+                string extra = given.Keys.FirstOrDefault(field => !asked.Contains(field));
+                if (extra != null)
+                {
+                    throw new CommandException(400, "This dialog does not ask for " + extra + "; it asks for " + string.Join(" and ", asked.ToArray()) + ".");
+                }
+                string missing = asked.FirstOrDefault(field => !given.ContainsKey(field));
+                if (missing != null)
+                {
+                    throw new CommandException(400, "Give " + missing + ": this dialog asks for " + string.Join(" and ", asked.ToArray()) + ".");
+                }
             }
             DialogOption read = interaction.Options.FirstOrDefault(option => option.Id == optionId);
             if (read == null)
@@ -533,6 +593,18 @@ namespace RiMCP.Command
             {
                 throw new CommandException(409, notReady);
             }
+            // The dialog's own check, as its OK button would make it, before anything is typed in.
+            if (asked != null)
+            {
+                foreach (string field in asked)
+                {
+                    string refusal = dialog.NameRefusal(field, given[field]);
+                    if (refusal != null)
+                    {
+                        throw new CommandException(409, refusal);
+                    }
+                }
+            }
             if (interaction.Selected != null && !interaction.Selected.Spawned)
             {
                 throw new CommandException(409, interaction.Selected.LabelShortCap.StripTags() + ", which this dialog belongs to, is gone.");
@@ -542,6 +614,13 @@ namespace RiMCP.Command
                 if (value.HasValue)
                 {
                     dialog.SetValue(value.Value);
+                }
+                if (asked != null)
+                {
+                    foreach (string field in asked)
+                    {
+                        dialog.SetName(field, given[field]);
+                    }
                 }
                 dialog.Choose(now);
             };
@@ -593,6 +672,7 @@ namespace RiMCP.Command
                 Dto.Field("question", open ? interaction.Dialog.Question() : null),
                 Dto.Field("options", open ? interaction.Options.Select(option => option.ToDto()).ToArray() : null),
                 Dto.Field("valueRange", open && interaction.Dialog.SetValue != null ? new[] { interaction.Dialog.Min, interaction.Dialog.Max } : null),
+                Dto.Field("names", open && interaction.Dialog.Names != null ? interaction.Dialog.Names() : null),
                 Dto.Field("canCancel", open ? (object)interaction.Dialog.CanCancel() : null));
         }
 

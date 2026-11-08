@@ -231,6 +231,9 @@ internal static class Program
         Test("a dialog adapted again still finds its own code, so a mod's stays a mod's", CheckDialogUnwrap);
         Test("dismissing a window again is already satisfied", CheckIdempotentDismiss);
         Test("a dialog that cannot be read is left to the player", CheckUnreadableDialog);
+        Test("the faction and settlement naming dialogs list their names and check them with their own rules", CheckNamingDialogs);
+        Test("a naming dialog's OK applies the trimmed names with the dialog's own code", CheckNamingApply);
+        Test("answer_dialog types a naming dialog's names, refusing missing or refused ones before anything runs", CheckNamingAnswers);
         Test("presets choose groups, and settings saved before presets migrate", CheckAccessPresets);
         Test("operations run one at a time, a step per frame, and stop at a safe step when cancelled or revoked", CheckOperationRunner);
         Test("operation retries return the original operation or an expired answer, for the last 1,000 requests", CheckOperationRetries);
@@ -1114,7 +1117,7 @@ internal static class Program
     private static object AnswerPage(object interaction, int page, string option, object value)
     {
         Type runner = mod.GetType("RiMCP.Command.Interactions", true);
-        object[] args = { interaction, page, option, value, null };
+        object[] args = { interaction, page, option, value, null, null };
         object chosen;
         try
         {
@@ -1126,7 +1129,7 @@ internal static class Program
         }
         try
         {
-            ((Action)args[4])();
+            ((Action)args[5])();
         }
         finally
         {
@@ -2341,6 +2344,114 @@ internal static class Program
         runner.GetMethod("Reset", Static).Invoke(null, null);
     }
 
+    // The text boxes of a naming dialog made without the game, as its constructor fills them.
+    private static T Naming<T>(string first, string second)
+    {
+        T dialog = Blank<T>();
+        BindingFlags instance = BindingFlags.Instance | BindingFlags.NonPublic;
+        typeof(Dialog_GiveName).GetField("curName", instance).SetValue(dialog, first);
+        typeof(Dialog_GiveName).GetField("curSecondName", instance).SetValue(dialog, second);
+        typeof(Dialog_GiveName).GetField("useSecondName", instance).SetValue(dialog, second != null);
+        return dialog;
+    }
+
+    private static object NamingAdapter(Window dialog)
+    {
+        return mod.GetType("RiMCP.Command.DialogAdapter", true).GetMethod("For", Static).Invoke(null, new object[] { dialog });
+    }
+
+    // The dialogs the game opens to name the faction and settlement are read as naming dialogs,
+    // asking for the names their text boxes hold, and names are checked with their own rules: a
+    // faction name is also a file name, so it is shorter and takes fewer characters.
+    private static void CheckNamingDialogs()
+    {
+        Dialog_NamePlayerFactionAndSettlement both = Naming<Dialog_NamePlayerFactionAndSettlement>("Old faction", "Old town");
+        object adapter = NamingAdapter(both);
+        Check(adapter != null && Field<string>(adapter, "Kind") == "naming", "the faction and settlement dialog is a naming dialog");
+        Check(Field<Func<List<string>>>(adapter, "NameFields")().SequenceEqual(new[] { "factionName", "settlementName" }), "it asks for the faction name, then the settlement name");
+        var names = ((object[])Field<Func<object>>(adapter, "Names")()).Cast<Dictionary<string, object>>().ToList();
+        Check((string)names[0]["field"] == "factionName" && (string)names[0]["text"] == "Old faction" && (int)names[0]["maxLength"] == 40, "the faction name's text and the longest the dialog takes: " + Json.Serialize(names[0]));
+        Check((string)names[1]["field"] == "settlementName" && (string)names[1]["text"] == "Old town" && (int)names[1]["maxLength"] == 64, "the settlement name's text and the longest the dialog takes: " + Json.Serialize(names[1]));
+        Check(!Field<Func<bool>>(adapter, "CanCancel")(), "a naming dialog cannot be cancelled, as in game");
+        Func<string, string, string> refusal = Field<Func<string, string, string>>(adapter, "NameRefusal");
+        Check(refusal("factionName", " Chicos de Guerra ") == null && refusal("settlementName", "La Ciudadela") == null, "good names are taken, trimmed as OK trims them");
+        Check((refusal("factionName", "   ") ?? "").Contains("empty"), "an empty name is refused");
+        Check((refusal("factionName", new string('a', 41)) ?? "").Contains("at most 40"), "a faction name longer than a file name is refused: " + refusal("factionName", new string('a', 41)));
+        Check((refusal("factionName", "Guerra!") ?? "").Contains("does not take there: !"), "a faction name with a character file names cannot have is refused, naming it: " + refusal("factionName", "Guerra!"));
+        Check((refusal("settlementName", "Ciudad {x}") ?? "").Contains("does not take there: { }"), "a name with the game's text markup is refused, naming it: " + refusal("settlementName", "Ciudad {x}"));
+        Check(refusal("settlementName", "Ciudad!") == null && refusal("settlementName", new string('a', 64)) == null, "a settlement name is not a file name");
+        Check((refusal("settlementName", new string('a', 65)) ?? "").Contains("at most 64"), "a name longer than the text box is refused");
+        Field<Action<string, string>>(adapter, "SetName")("settlementName", "La Ciudadela");
+        Check((string)typeof(Dialog_GiveName).GetField("curSecondName", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(both) == "La Ciudadela", "a name is typed into its own text box");
+
+        object faction = NamingAdapter(Naming<Dialog_NamePlayerFaction>("Old faction", null));
+        Check(Field<Func<List<string>>>(faction, "NameFields")().SequenceEqual(new[] { "factionName" }), "the faction dialog asks for the faction name only");
+        object settlement = NamingAdapter(Naming<Dialog_NamePlayerSettlement>("Old town", null));
+        Check(Field<Func<List<string>>>(settlement, "NameFields")().SequenceEqual(new[] { "settlementName" }), "the settlement dialog asks for the settlement name only");
+        Check(Field<Func<string, string, string>>(settlement, "NameRefusal")("settlementName", "Ciudad!") == null, "the settlement dialog checks its name as a settlement name");
+        Check(NamingAdapter(Naming<Dialog_NamePlayerGravship>("Old ship", null)) == null, "naming dialogs answer_dialog does not know stay the player's");
+    }
+
+    // OK's own steps on a dialog whose naming code is recorded: trimmed names, the dialog's check,
+    // then its code for each name; and the dialog's own code is what the answer runs.
+    private static void CheckNamingApply()
+    {
+        RegressionNamingDialog dialog = Naming<RegressionNamingDialog>("  Chicos de Guerra ", " La Ciudadela  ");
+        string[] names = (string[])Invoke("RiMCP.Command.NamingDialogs", "Apply", dialog);
+        Check(names.SequenceEqual(new[] { "Chicos de Guerra", "La Ciudadela" }), "OK trims the names: " + string.Join("|", names));
+        Check(dialog.Given.SequenceEqual(new[] { "faction:Chicos de Guerra", "settlement:La Ciudadela" }), "OK names the faction, then the settlement, with the dialog's own code: " + string.Join("|", dialog.Given));
+        RegressionNamingDialog refused = Naming<RegressionNamingDialog>("Guerra!", "La Ciudadela");
+        ExpectCommandError(409, () => Invoke("RiMCP.Command.NamingDialogs", "Apply", refused));
+        Check(refused.Given.Count == 0, "names the dialog's check refuses name nothing");
+        Delegate own = (Delegate)Invoke("RiMCP.Command.NamingDialogs", "OwnCode", dialog);
+        Delegate game = (Delegate)Invoke("RiMCP.Command.NamingDialogs", "OwnCode", Naming<Dialog_NamePlayerFaction>("x", null));
+        Check(own != null && own.Method.DeclaringType == typeof(RegressionNamingDialog) && game != null && game.Method.DeclaringType == typeof(Dialog_NamePlayerFaction), "an answer runs the dialog's own naming code, a mod's included");
+    }
+
+    // Through answer_dialog: the names a naming dialog asks for are all needed, are checked before
+    // anything is typed or pressed, and are typed in before OK.
+    private static void CheckNamingAnswers()
+    {
+        object spec = Tool("answer_dialog");
+        Check(new[] { "factionName", "settlementName" }.All(Field<string[]>(spec, "BodyKeys").Contains)
+            && new[] { "factionName", "settlementName" }.All(name => (string)((Dictionary<string, object>)ToolProperties(spec)[name])["type"] == "string"), "answer_dialog takes the names as strings in its body");
+        Type runner = mod.GetType("RiMCP.Command.Interactions", true);
+        runner.GetMethod("Reset", Static).Invoke(null, null);
+        try
+        {
+            var fake = new FakeDialog { Options = new List<string[]> { new[] { "ok", "0", "OK", null } } };
+            object adapter = FakeAdapter(fake);
+            var typed = new Dictionary<string, string>();
+            Action<string, object> set = (name, value) => adapter.GetType().GetField(name).SetValue(adapter, value);
+            set("Kind", "naming");
+            set("NameFields", (Func<List<string>>)(() => new List<string> { "factionName", "settlementName" }));
+            set("Names", (Func<object>)(() => new object[0]));
+            set("NameRefusal", (Func<string, string, string>)((field, name) => name.Trim().Length == 0 ? "The dialog refuses the empty " + field + "." : null));
+            set("SetName", (Action<string, string>)((field, name) => typed[field] = name));
+            object dialog = runner.GetMethod("Start", Static).Invoke(null, new object[] { "dismiss_dialog", "Dialog_NamePlayerFactionAndSettlement", adapter, null, null });
+            Func<object, string, object> answer = (interaction, fields) => Invoke("RiMCP.Command.DecisionCommandService", "AnswerDialog",
+                Request("/v1/interactions/" + Field<string>(interaction, "Id") + "/answer", "POST", "{\"page\":" + Field<int>(interaction, "Page") + fields + "}"), Route("interactionId", Field<string>(interaction, "Id")));
+            ExpectCommandError(400, () => answer(dialog, ",\"option\":\"ok\",\"factionName\":\"Chicos de Guerra\""));
+            ExpectCommandError(409, () => answer(dialog, ",\"option\":\"ok\",\"factionName\":\"Chicos de Guerra\",\"settlementName\":\"  \""));
+            ExpectCommandError(400, () => answer(dialog, ",\"cancel\":true,\"factionName\":\"Chicos de Guerra\""));
+            Check(typed.Count == 0 && fake.Chosen.Count == 0, "nothing is typed or pressed before the names pass");
+            object response = answer(dialog, ",\"option\":\"ok\",\"factionName\":\"Chicos de Guerra\",\"settlementName\":\" La Ciudadela \"");
+            var json = Json.Deserialize<Dictionary<string, object>>((string)response.GetType().GetField("Body").GetValue(response));
+            Check((int)response.GetType().GetField("StatusCode").GetValue(response) == 200 && fake.Chosen.SequenceEqual(new[] { "ok" }), "the names answer the dialog with OK");
+            Check(typed["factionName"] == "Chicos de Guerra" && typed["settlementName"] == " La Ciudadela ", "the names are typed in as given, before OK");
+            Check((string)((Dictionary<string, object>)Data(json)["names"])["settlementName"] == "La Ciudadela", "the reply gives the names as OK takes them");
+
+            var plain = new FakeDialog();
+            object other = runner.GetMethod("Start", Static).Invoke(null, new object[] { "dismiss_dialog", "Dialog_NodeTree", FakeAdapter(plain), null, null });
+            ExpectCommandError(400, () => answer(other, ",\"option\":\"1\",\"factionName\":\"Chicos de Guerra\""));
+            Check(plain.Chosen.Count == 0, "a dialog that asks for no names refuses them");
+        }
+        finally
+        {
+            runner.GetMethod("Reset", Static).Invoke(null, null);
+        }
+    }
+
     private static T Blank<T>()
     {
         return (T)FormatterServices.GetUninitializedObject(typeof(T));
@@ -2830,6 +2941,29 @@ public sealed class RegressionCancelNotice : Window
     public override void OnCancelKeyPressed()
     {
         Close(false);
+    }
+}
+
+// A naming dialog whose naming code is recorded instead of naming anything.
+public sealed class RegressionNamingDialog : Dialog_NamePlayerFactionAndSettlement
+{
+    private List<string> given;
+
+    public RegressionNamingDialog(RimWorld.Planet.Settlement settlement) : base(settlement)
+    {
+    }
+
+    // Made without its constructor, so made on first use.
+    public List<string> Given => given ?? (given = new List<string>());
+
+    protected override void Named(string s)
+    {
+        Given.Add("faction:" + s);
+    }
+
+    protected override void NamedSecond(string s)
+    {
+        Given.Add("settlement:" + s);
     }
 }
 
