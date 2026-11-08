@@ -306,7 +306,8 @@ internal static class Program
         Test("fire_incident reaches its handler in the game settings group and offers exactly the allow-listed incidents", CheckIncidentTool);
         Test("trade tools refuse bad input before anything runs, and each needs a loaded game", CheckTradeInputs);
         Test("a bought item that merged into an existing stack is an arrival, and goods that never come are not", CheckTradeArrival);
-        Test("tradeable keys are def, stuff and quality, numbered by hit points, and stay the same in a freshly built deal", CheckTradeKeys);
+        Test("tradeable keys are def, stuff and quality, with a thing number where tradeables share one, and stay the same in a freshly built deal", CheckTradeKeys);
+        Test("a trade session puts the game's statics back as it found them and is not blocked by a stale trader", CheckTradeSessionLifecycle);
         Test("fire_incident is off by default, refuses before anything is looked at, and no tool can turn it on", CheckIncidentGate);
         Test("the Trade option and the trade ship call point to the trade tools instead of refusing", CheckTradeRefusalsPointToTools);
         Test("order_pawn and designate offer exactly the kinds they handle, and queue reaches the handler", () =>
@@ -3219,7 +3220,7 @@ internal static class Program
             Delegate handler = handlers[row[1]] as Delegate;
             Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == row[5], row[0] + " must be handled by " + row[5]);
         }
-        Check(Field<string[]>(Tool("execute_trade"), "BodyKeys").SequenceEqual(new[] { "mapId", "traderId", "negotiatorId", "buy", "sell", "requestId", "expectedLoadId" }), "execute_trade sends its fields in the body, with the load guard");
+        Check(Field<string[]>(Tool("execute_trade"), "BodyKeys").SequenceEqual(new[] { "mapId", "traderId", "negotiatorId", "buy", "sell", "maxColonyCost", "minColonyGain", "requestId", "expectedLoadId" }), "execute_trade sends its fields in the body, with the load guard");
         Check(ToolProperties(Tool("execute_trade")).ContainsKey("expectedLoadId"), "execute_trade takes expectedLoadId");
         Check(new[] { "traderId", "negotiatorId", "query", "def" }.All(Field<string[]>(Tool("get_trade"), "QueryKeys").Contains), "get_trade reads its filters from the query");
 
@@ -3252,7 +3253,7 @@ internal static class Program
         Delegate handler = handlers["fire-incident"] as Delegate;
         Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == "IncidentCommandService.FireIncident", "fire_incident must be handled by IncidentCommandService.FireIncident");
         Check(Field<string[]>(spec, "BodyKeys").SequenceEqual(new[] { "mapId", "incident", "points", "requestId", "expectedLoadId" }), "fire_incident sends its fields in the body, with the load guard");
-        Check(ToolProperties(spec).ContainsKey("expectedLoadId") && ((string[])Field<Dictionary<string, object>>(spec, "InputSchema")["required"]).SequenceEqual(new[] { "incident" }), "fire_incident takes expectedLoadId and needs an incident");
+        Check(ToolProperties(spec).ContainsKey("expectedLoadId") && ((string[])Field<Dictionary<string, object>>(spec, "InputSchema")["required"]).SequenceEqual(new[] { "incident", "expectedLoadId" }), "fire_incident takes expectedLoadId and needs it, with an incident");
         Check(!(bool)Field<Dictionary<string, object>>(spec, "Annotations")["readOnlyHint"], "fire_incident is a write");
         string[] offered = (string[])((Dictionary<string, object>)ToolProperties(Tool("fire_incident"))["incident"])["enum"];
         string[] allowed = (string[])mod.GetType("RiMCP.Command.IncidentCommandService", true).GetField("Allowed", Static).GetValue(null);
@@ -3314,11 +3315,11 @@ internal static class Program
         ExpectBridgeError(409, () => Invoke("RiMCP.Read.TradeReadService", "ListTraders", Request("/v1/traders"), Route()));
     }
 
-    private static ThingWithComps TradeThing(string defName, int id, int count, int hitPoints, string stuff = null, QualityCategory? quality = null)
+    private static ThingWithComps TradeThing(string defName, int id, int count, int hitPoints, string stuff = null, QualityCategory? quality = null, int stackLimit = 0)
     {
         const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
         ThingWithComps thing = (ThingWithComps)FormatterServices.GetUninitializedObject(typeof(ThingWithComps));
-        thing.def = NamedDef(defName);
+        thing.def = NamedDef(defName, stackLimit);
         thing.thingIDNumber = id;
         thing.stackCount = count;
         typeof(Thing).GetField("hitPointsInt", Fields).SetValue(thing, hitPoints);
@@ -3336,10 +3337,11 @@ internal static class Program
     }
 
     // A ThingDef made without its constructor, which needs the game's graphics.
-    private static ThingDef NamedDef(string defName)
+    private static ThingDef NamedDef(string defName, int stackLimit = 0)
     {
         ThingDef def = Blank<ThingDef>();
         def.defName = defName;
+        def.stackLimit = stackLimit;
         return def;
     }
 
@@ -3358,105 +3360,208 @@ internal static class Program
         return deal;
     }
 
-    // The game builds its tradeables again every session, so the keys must come out the same from
-    // fresh objects, whatever order the goods come in.
+    // The game builds its tradeables again every session, so the keys must come out the same from fresh
+    // objects, whatever order the goods and the things within a tradeable come in, and whatever their hit
+    // points do meanwhile.
     private static void CheckTradeKeys()
     {
-        Func<bool, Dictionary<string, int>> keysOf = reversed =>
+        Func<bool, Dictionary<string, int>> keysOf = changed =>
         {
             var built = new List<Tradeable>
             {
-                Tradeables(new Thing[] { TradeThing("Steel", 1, 100, -1) }, new Thing[] { TradeThing("Steel", 2, 200, -1) }),
+                Tradeables(new Thing[] { TradeThing("Steel", 1, 100, -1), TradeThing("Steel", 9, 40, -1) }, new Thing[] { TradeThing("Steel", 2, 200, -1) }),
                 Tradeables(new Thing[0], new Thing[] { TradeThing("Apparel_Parka", 3, 1, 80, "Leather_Wolf", QualityCategory.Good) }),
                 Tradeables(new Thing[0], new Thing[] { TradeThing("Apparel_Parka", 4, 1, 80, "Leather_Wolf", QualityCategory.Normal) }),
-                Tradeables(new Thing[] { TradeThing("MeleeWeapon_LongSword", 5, 1, 40, "Steel", QualityCategory.Normal) }, new Thing[0]),
-                Tradeables(new Thing[0], new Thing[] { TradeThing("MeleeWeapon_LongSword", 6, 1, 90, "Steel", QualityCategory.Normal) }),
-                Tradeables(new Thing[0], new Thing[] { TradeThing("Gold", 7, 30, -1) })
+                Tradeables(new Thing[] { TradeThing("MeleeWeapon_LongSword", 5, 1, changed ? 95 : 40, "Steel", QualityCategory.Normal) }, new Thing[0]),
+                Tradeables(new Thing[0], new Thing[] { TradeThing("MeleeWeapon_LongSword", 6, 1, changed ? 30 : 90, "Steel", QualityCategory.Normal), TradeThing("MeleeWeapon_LongSword", 10, 1, 90, "Steel", QualityCategory.Normal) }),
+                Tradeables(new Thing[0], new Thing[] { TradeThing("Gold", 7, 30, -1) }),
+                Tradeables(new Thing[0], new Thing[] { TradeThing("Apparel_Hat", 8, 1, 60, null, null, 1) })
             };
-            if (reversed)
+            if (changed)
             {
                 built.Reverse();
+                foreach (Tradeable tradeable in built)
+                {
+                    tradeable.thingsColony.Reverse();
+                    tradeable.thingsTrader.Reverse();
+                }
             }
             IList rows = (IList)Invoke("RiMCP.Read.TradeSupport", "Rows", DealOf(built));
             var result = new Dictionary<string, int>();
             foreach (object row in rows)
             {
                 Tradeable tradeable = Field<Tradeable>(row, "Tradeable");
-                result[Field<string>(row, "Key")] = tradeable.AnyThing.thingIDNumber;
+                result[Field<string>(row, "Key")] = tradeable.thingsColony.Concat(tradeable.thingsTrader).Min(thing => thing.thingIDNumber);
             }
             Check(result.Count == rows.Count, "every row has its own key");
             return result;
         };
         Dictionary<string, int> first = keysOf(false);
         Dictionary<string, int> again = keysOf(true);
-        Check(first.Count == again.Count && first.All(pair => again.ContainsKey(pair.Key) && again[pair.Key] == pair.Value), "keys name the same goods in a freshly built deal: " + string.Join(", ", first.Keys));
+        Check(first.Count == again.Count && first.All(pair => again.ContainsKey(pair.Key) && again[pair.Key] == pair.Value), "keys name the same goods in a freshly built deal, reordered, with other hit points: " + string.Join(", ", first.Keys));
         var wanted = new Dictionary<string, int>
         {
             { "Steel", 1 }, { "Gold", 7 }, { "Apparel_Parka:Leather_Wolf@Good", 3 }, { "Apparel_Parka:Leather_Wolf@Normal", 4 },
-            { "MeleeWeapon_LongSword:Steel@Normal", 5 }, { "MeleeWeapon_LongSword:Steel@Normal#2", 6 }
+            { "Apparel_Hat#8", 8 }, { "MeleeWeapon_LongSword:Steel@Normal#5", 5 }, { "MeleeWeapon_LongSword:Steel@Normal#6", 6 }
         };
-        Check(first.Count == wanted.Count && wanted.All(pair => first.ContainsKey(pair.Key) && first[pair.Key] == pair.Value), "keys are def[:stuff][@quality], with #2 for a second hit point band: " + string.Join(", ", first.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
+        Check(first.Count == wanted.Count && wanted.All(pair => first.ContainsKey(pair.Key) && first[pair.Key] == pair.Value), "keys are def[:stuff][@quality], with the lowest thing number where several tradeables share one or an item never stacks: " + string.Join(", ", first.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
 
-        // A pawn's key names one pawn, and any pawn of its group finds the row.
+        // Any thing of a tradeable finds it, so a key outlives the stack it named; a number belongs to its own key.
         Type rowType = mod.GetType("RiMCP.Read.TradeRow", true);
-        object herd = Activator.CreateInstance(rowType);
-        rowType.GetField("Key").SetValue(herd, "pawn:Muffalo10");
-        rowType.GetField("Tradeable").SetValue(herd, Tradeables(new Thing[] { TradeThing("Muffalo", 10, 1, -1), TradeThing("Muffalo", 11, 1, -1) }, new Thing[0]));
+        Func<string, Tradeable, object> makeRow = (key, tradeable) =>
+        {
+            object row = Activator.CreateInstance(rowType);
+            rowType.GetField("Key").SetValue(row, key);
+            rowType.GetField("Tradeable").SetValue(row, tradeable);
+            return row;
+        };
+        object herd = makeRow("pawn:Muffalo10", Tradeables(new Thing[] { TradeThing("Muffalo", 10, 1, -1), TradeThing("Muffalo", 11, 1, -1) }, new Thing[0]));
+        object swords = makeRow("MeleeWeapon_LongSword:Steel@Normal#6", Tradeables(new Thing[0], new Thing[] { TradeThing("MeleeWeapon_LongSword", 6, 1, 90, "Steel", QualityCategory.Normal), TradeThing("MeleeWeapon_LongSword", 10, 1, 90, "Steel", QualityCategory.Normal) }));
         IList rowsList = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(rowType));
         rowsList.Add(herd);
+        rowsList.Add(swords);
         Func<string, object> find = key => Invoke("RiMCP.Read.TradeSupport", "FindRow", rowsList, key);
         Check(ReferenceEquals(find("pawn:Muffalo10"), herd) && ReferenceEquals(find(" pawn:Muffalo11 "), herd), "a pawn key finds its group by any member");
-        Check(find("pawn:Muffalo99") == null && find("Steel") == null && find(null) == null, "an unknown key finds nothing");
+        Check(ReferenceEquals(find("MeleeWeapon_LongSword:Steel@Normal#6"), swords) && ReferenceEquals(find("MeleeWeapon_LongSword:Steel@Normal#10"), swords), "a numbered key finds its tradeable by any of its things");
+        Check(find("MeleeWeapon_LongSword:Steel@Good#6") == null && find("MeleeWeapon_LongSword:Steel@Normal#99") == null, "a number only finds the key it belongs to");
+        Check(find("pawn:Muffalo99") == null && find("Steel") == null && find(null) == null && find("  ") == null, "an unknown key finds nothing");
+
+        // What is left of a tradeable after a deal is found through whichever of its things survived.
+        MethodInfo containing = mod.GetType("RiMCP.Read.TradeSupport", true).GetMethod("RowsContaining", Static);
+        Check(((IList)containing.Invoke(null, new object[] { rowsList, new HashSet<int> { 11 } })).Count == 1 && ((IList)containing.Invoke(null, new object[] { rowsList, new HashSet<int> { 99 } })).Count == 0, "a tradeable is found again through any remaining thing");
     }
 
-    // fire_incident is off by default, refuses before anything else is looked at, and no tool can turn it on.
+    // A trade session is the game's statics for as long as the call lasts, and the game never clears
+    // them itself, so a trader left there by an earlier window must neither block nor survive a session.
+    private sealed class StaleTrader : ITrader
+    {
+        public TraderKindDef TraderKind { get { return null; } }
+        public IEnumerable<Thing> Goods { get { return new Thing[0]; } }
+        public int RandomPriceFactorSeed { get { return 0; } }
+        public string TraderName { get { return "stale"; } }
+        public bool CanTradeNow { get { return true; } }
+        public float TradePriceImprovementOffsetForPlayer { get { return 0f; } }
+        public Faction Faction { get { return null; } }
+        public TradeCurrency TradeCurrency { get { return TradeCurrency.Silver; } }
+        public IEnumerable<Thing> ColonyThingsWillingToBuy(Pawn playerNegotiator) { return new Thing[0]; }
+        public void GiveSoldThingToTrader(Thing toGive, int countToGive, Pawn playerNegotiator) { }
+        public void GiveSoldThingToPlayer(Thing toGive, int countToGive, Pawn playerNegotiator) { }
+    }
+
+    private static void CheckTradeSessionLifecycle()
+    {
+        Type sessionType = mod.GetType("RiMCP.Read.TradeSupport+Session", true);
+        Func<ITrader, Func<TradeDeal>, IDisposable> open = (trader, makeDeal) => (IDisposable)Activator.CreateInstance(sessionType, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public, null, new object[] { trader, null, makeDeal }, null);
+        ITrader staleTrader = new StaleTrader();
+        TradeDeal staleDeal = DealOf(new Tradeable[0]);
+        TradeDeal mine = DealOf(new Tradeable[0]);
+        ITrader savedTrader = TradeSession.trader;
+        Pawn savedNegotiator = TradeSession.playerNegotiator;
+        TradeDeal savedDeal = TradeSession.deal;
+        bool savedGift = TradeSession.giftMode;
+        try
+        {
+            TradeSession.trader = staleTrader;
+            TradeSession.deal = staleDeal;
+            TradeSession.giftMode = true;
+            ITrader trader = new StaleTrader();
+            using (IDisposable session = open(trader, () => mine))
+            {
+                Check(ReferenceEquals(TradeSession.trader, trader) && ReferenceEquals(TradeSession.deal, mine) && !TradeSession.giftMode, "inside a session the game's statics are the session's, even with a stale trader left there");
+            }
+            Check(ReferenceEquals(TradeSession.trader, staleTrader) && ReferenceEquals(TradeSession.deal, staleDeal) && TradeSession.giftMode, "a session puts the statics back as it found them");
+
+            TradeSession.trader = null;
+            TradeSession.deal = null;
+            TradeSession.giftMode = false;
+            try
+            {
+                open(trader, () => { throw new InvalidOperationException("no deal"); });
+                throw new Exception("a deal that cannot be built must fail the session");
+            }
+            catch (TargetInvocationException e)
+            {
+                Check(e.InnerException is InvalidOperationException, "the failure is the deal's own");
+            }
+            Check(TradeSession.trader == null && TradeSession.deal == null && !TradeSession.Active, "a session that fails to open leaves nothing behind");
+        }
+        finally
+        {
+            TradeSession.trader = savedTrader;
+            TradeSession.playerNegotiator = savedNegotiator;
+            TradeSession.deal = savedDeal;
+            TradeSession.giftMode = savedGift;
+        }
+        Check((bool)Invoke("RiMCP.Command.TradeCommandService", "SilverVerified", 1169, 1025, 144), "the trader's silver falls by what the colony gains");
+        Check((bool)Invoke("RiMCP.Command.TradeCommandService", "SilverVerified", 500, 620, -120), "and rises by what the colony pays");
+        Check(!(bool)Invoke("RiMCP.Command.TradeCommandService", "SilverVerified", 500, 500, -120), "silver that did not move does not verify");
+    }
+
+    // fire_incident is off by default, refuses before anything else is looked at, works only in the colony
+    // the player named, and no tool can turn it on.
     private static void CheckIncidentGate()
     {
         Type runtime = mod.GetType("RiMCP.Bridge.BridgeRuntime", true);
         FieldInfo settingsField = runtime.GetField("settings", Static);
         Type settingsType = mod.GetType("RiMCP.Settings.RiMCPSettings", true);
         object settings = Activator.CreateInstance(settingsType);
-        FieldInfo allow = settingsType.GetField("AllowTestIncidents");
-        Check(!(bool)allow.GetValue(settings), "test incidents are off in new settings");
+        FieldInfo colonyField = settingsType.GetField("TestIncidentColony");
+        Check(string.IsNullOrEmpty((string)colonyField.GetValue(settings)), "test incidents name no colony in new settings");
         Func<string, object> fire = body => Invoke("RiMCP.Command.IncidentCommandService", "FireIncident", Request("/v1/incidents", "POST", body), Route());
-        Func<bool> allowed = () => (bool)runtime.GetProperty("TestIncidentsAllowed", Static).GetValue(null);
+        Func<string> colony = () => (string)runtime.GetProperty("TestIncidentColony", Static).GetValue(null);
+        Action<string, Action> refused = (what, call) =>
+        {
+            try { call(); }
+            catch (Exception e)
+            {
+                while (e is TargetInvocationException && e.InnerException != null) e = e.InnerException;
+                Check(e.GetType().Name == "CommandException" && (int)e.GetType().GetField("StatusCode").GetValue(e) == 403, what + " must be refused with 403, got " + e.GetType().Name + ": " + e.Message);
+                Check(e.Message.Contains("Nothing was sent to the game"), what + ": the refusal says nothing was sent: " + e.Message);
+                return;
+            }
+            throw new Exception(what + " must be refused, but the call succeeded");
+        };
         object saved = settingsField.GetValue(null);
         try
         {
             settingsField.SetValue(null, null);
-            Check(!allowed(), "with no settings loaded the gate is closed");
-            ExpectCommandError(403, () => fire("{\"incident\":\"RaidEnemy\"}"));
+            Check(colony() == null, "with no settings loaded no colony is allowed");
+            refused("a call with no settings", () => fire("{\"incident\":\"RaidEnemy\",\"expectedLoadId\":\"x\"}"));
             settingsField.SetValue(null, settings);
-            Check(!allowed(), "with the setting off the gate is closed");
-            ExpectCommandError(403, () => fire("{\"incident\":\"RaidEnemy\",\"points\":80,\"requestId\":\"x\"}"));
-            ExpectCommandError(403, () => fire("{\"incident\":\"Disease_Flu\"}"));
-            try { fire("{}"); }
-            catch (Exception e)
-            {
-                while (e is TargetInvocationException && e.InnerException != null) e = e.InnerException;
-                Check(e.Message.Contains("testing only") && e.Message.Contains("Nothing was sent to the game"), "the refusal says why: " + e.Message);
-            }
+            Check(colony() == null, "with no colony named none is allowed");
+            refused("a raid with no colony named", () => fire("{\"incident\":\"RaidEnemy\",\"points\":80,\"requestId\":\"x\",\"expectedLoadId\":\"x\"}"));
+            refused("an incident outside the allowlist while off", () => fire("{\"incident\":\"Disease_Flu\"}"));
+            refused("an empty call while off", () => fire("{}"));
+            colonyField.SetValue(settings, "   ");
+            refused("a blank colony name", () => fire("{\"incident\":\"RaidEnemy\",\"expectedLoadId\":\"x\"}"));
 
             // Through the router, with every group on, the closed gate still refuses.
             MethodInfo handle = mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetMethod("Handle", Static);
             object response = handle.Invoke(null, new[] { Request("/v1/incidents", "POST", "{\"incident\":\"TraderCaravanArrival\"}") });
             Check((int)response.GetType().GetField("StatusCode").GetValue(response) == 403 && ((string)response.GetType().GetField("Body").GetValue(response)).Contains("testing only"), "the router refuses fire_incident while it is off");
 
-            // With it on, the call is looked at: only the allowlist, points only for a raid, and a loaded game.
-            allow.SetValue(settings, true);
-            Check(allowed(), "with the setting on the gate opens");
-            ExpectCommandError(400, () => fire("{}"));
-            ExpectCommandError(400, () => fire("{\"incident\":\"Disease_Flu\"}"));
-            ExpectCommandError(400, () => fire("{\"incident\":\"TraderCaravanArrival\",\"points\":50}"));
-            ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\",\"points\":0}"));
-            ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\",\"points\":5001}"));
-            ExpectCommandError(409, () => fire("{\"incident\":\"RaidEnemy\",\"points\":80}"));
-            ExpectCommandError(409, () => fire("{\"incident\":\"orbitaltraderarrival\"}"));
+            // With a colony named, the call is looked at: expectedLoadId, only the allowlist, points only
+            // for a raid, a loaded game, and then the colony itself.
+            colonyField.SetValue(settings, " Sandbox ");
+            Check(colony() == "Sandbox", "the named colony is trimmed");
+            ExpectCommandError(400, () => fire("{\"expectedLoadId\":\"x\"}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"Disease_Flu\",\"expectedLoadId\":\"x\"}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\"}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"TraderCaravanArrival\",\"points\":50,\"expectedLoadId\":\"x\"}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\",\"points\":0,\"expectedLoadId\":\"x\"}"));
+            ExpectCommandError(400, () => fire("{\"incident\":\"RaidEnemy\",\"points\":5001,\"expectedLoadId\":\"x\"}"));
+            ExpectCommandError(409, () => fire("{\"incident\":\"RaidEnemy\",\"points\":80,\"expectedLoadId\":\"x\"}"));
+            ExpectCommandError(409, () => fire("{\"incident\":\"orbitaltraderarrival\",\"expectedLoadId\":\"x\"}"));
         }
         finally
         {
             settingsField.SetValue(null, saved);
         }
+
+        // The colony rule: the colony the player typed, any case, and no other.
+        Func<string, string, bool> allowed = (named, current) => (bool)Invoke("RiMCP.Command.IncidentCommandService", "ColonyAllowed", named, current);
+        Check(allowed("Sandbox", "sandbox") && allowed(" Sandbox ", "Sandbox"), "the named colony is allowed, by name as typed");
+        Check(!allowed("Sandbox", "Heouristan") && !allowed("Sandbox", null) && !allowed(null, "Sandbox") && !allowed("", "") && !allowed(" ", " "), "any other colony, an unnamed one, or no colony named is refused");
 
         // Nothing an agent can call carries the setting: no schema names it, and the settings
         // object is read by the gate and written only by the settings window.
@@ -3464,7 +3569,7 @@ internal static class Program
         {
             if (Field<Dictionary<string, object>>(spec, "InputSchema").ContainsKey("properties"))
             {
-                Check(!ToolProperties(spec).Keys.Any(key => key.IndexOf("allowTestIncidents", StringComparison.OrdinalIgnoreCase) >= 0), Field<string>(spec, "Name") + " must not take the incident setting");
+                Check(!ToolProperties(spec).Keys.Any(key => key.IndexOf("testIncidentColony", StringComparison.OrdinalIgnoreCase) >= 0), Field<string>(spec, "Name") + " must not take the incident setting");
             }
         }
         Check(!Field<string[]>(Tool("set_game_settings"), "BodyKeys").Any(key => key.IndexOf("incident", StringComparison.OrdinalIgnoreCase) >= 0), "set_game_settings does not reach the incident setting");

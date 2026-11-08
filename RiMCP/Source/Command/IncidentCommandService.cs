@@ -27,12 +27,18 @@ namespace RiMCP.Command
         public const int DefaultRaidPoints = 60;
         public const int MaxRaidPoints = 5000;
 
-        public const string Disabled = "fire_incident is for testing only and is turned off. The player turns it on with the 'Allow test incidents (testing only)' checkbox on the Safety tab of RimMCP's mod settings; no tool can. Nothing was sent to the game.";
+        public const string Disabled = "fire_incident is for testing only and is turned off. The player allows it for one colony by typing its name in the 'Test incidents in colony (testing only)' setting on the Safety tab of RimMCP's mod settings; no tool can. Nothing was sent to the game.";
+
+        // Only the colony the player named, compared by name as the player typed it.
+        internal static bool ColonyAllowed(string allowed, string current)
+        {
+            return !string.IsNullOrWhiteSpace(allowed) && !string.IsNullOrWhiteSpace(current) && string.Equals(allowed.Trim(), current.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
 
         public static BridgeResponse FireIncident(BridgeRequest request, RouteMatch route)
         {
             // The gate comes first: with it off, nothing else about the call is looked at or run.
-            if (!BridgeRuntime.TestIncidentsAllowed)
+            if (BridgeRuntime.TestIncidentColony == null)
             {
                 throw new CommandException(403, Disabled);
             }
@@ -51,10 +57,19 @@ namespace RiMCP.Command
             {
                 throw new CommandException(400, "Field 'points' must be from 1 to " + MaxRaidPoints + ".");
             }
+            if (string.IsNullOrWhiteSpace(body.ExpectedLoadId))
+            {
+                throw new CommandException(400, "Field 'expectedLoadId' is required: the loadId of the game the test is for, from any read.");
+            }
             string requestId = CommandUtil.ValidateRequestId(body.RequestId);
 
             CommandContext context = CommandUtil.ContextFor(body.MapId);
             CommandUtil.RequireMap(context);
+            string colony = Faction.OfPlayer == null || Faction.OfPlayer.Name == null ? null : Faction.OfPlayer.Name;
+            if (!ColonyAllowed(BridgeRuntime.TestIncidentColony, colony))
+            {
+                throw new CommandException(403, "fire_incident is allowed only in the colony '" + BridgeRuntime.TestIncidentColony + "', and this game's colony is '" + (colony ?? "unnamed") + "'. Nothing was sent to the game.");
+            }
             RequestKey key = RequestKey.For("fire_incident", requestId, context.Map, incident, body.Points);
             return CommandReceipts.Once(context, key, () => Fire(context, incident, body.Points));
         }
@@ -75,9 +90,10 @@ namespace RiMCP.Command
             // The storyteller's own default parameters for this map, forced as a debug fire is.
             IncidentParms parms = StorytellerUtility.DefaultParmsNow(def.category, map);
             parms.forced = true;
+            float requestedPoints = points ?? DefaultRaidPoints;
             if (incident == Raid)
             {
-                parms.points = points ?? DefaultRaidPoints;
+                parms.points = requestedPoints;
             }
             IncidentWorker worker = def.Worker;
             if (!worker.CanFireNow(parms))
@@ -111,7 +127,9 @@ namespace RiMCP.Command
             Dictionary<string, object> data = Dto.Obj(
                 Dto.Field("incident", incident),
                 Dto.Field("fired", fired),
-                Dto.Field("points", incident == Raid ? (object)Math.Round(parms.points, 1) : null),
+                // The game scales a raid's points to what it can field, so the two can differ.
+                Dto.Field("requestedPoints", incident == Raid ? (object)Math.Round(requestedPoints, 1) : null),
+                Dto.Field("adjustedPoints", incident == Raid ? (object)Math.Round(parms.points, 1) : null),
                 Dto.Field("faction", parms.faction == null ? null : parms.faction.Name),
                 Dto.Field("raidStrategy", parms.raidStrategy == null ? null : parms.raidStrategy.defName),
                 Dto.Field("arrival", parms.raidArrivalMode == null ? null : parms.raidArrivalMode.defName),
@@ -169,6 +187,9 @@ namespace RiMCP.Command
 
             [DataMember(Name = "requestId")]
             public string RequestId { get; set; }
+
+            [DataMember(Name = "expectedLoadId")]
+            public string ExpectedLoadId { get; set; }
         }
     }
 }

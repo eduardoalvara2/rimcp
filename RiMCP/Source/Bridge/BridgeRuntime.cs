@@ -37,10 +37,14 @@ namespace RiMCP.Bridge
             get { return settings == null || settings.AllowModActions; }
         }
 
-        // Off unless the player turned it on, and also while no settings are loaded.
-        public static bool TestIncidentsAllowed
+        // The colony the player allows test incidents in; null, which is off, until they name one.
+        public static string TestIncidentColony
         {
-            get { return settings != null && settings.AllowTestIncidents; }
+            get
+            {
+                string colony = settings == null ? null : settings.TestIncidentColony;
+                return string.IsNullOrWhiteSpace(colony) ? null : colony.Trim();
+            }
         }
 
         public static bool IsRunning

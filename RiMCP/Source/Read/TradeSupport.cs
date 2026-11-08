@@ -39,7 +39,7 @@ namespace RiMCP.Read
     // Dialog_Trade sets it up, and always closed again.
     internal static class TradeSupport
     {
-        public const string KeyHelp = "def[:stuff][@quality][#n] for items, pawn:<thingId> for animals and people";
+        public const string KeyHelp = "def[:stuff][@quality][#thingNumber] for items, pawn:<thingId> for animals and people";
 
         // --- Traders ---
 
@@ -141,6 +141,10 @@ namespace RiMCP.Read
             {
                 return "Cannot talk.";
             }
+            if (!entry.Orbital && (pawn.skills == null || pawn.skills.GetSkill(SkillDefOf.Social).TotallyDisabled))
+            {
+                return "Incapable of Social, which a caravan trade needs.";
+            }
             AcceptanceReport report = pawn.CanTradeWith(entry.Trader.Faction, entry.Trader.TraderKind);
             if (!report.Accepted)
             {
@@ -180,26 +184,40 @@ namespace RiMCP.Read
 
         // --- Sessions ---
 
-        // A trade session with no window: the same statics Dialog_Trade fills in, set back when it
-        // closes. It skips SetupWith, which would flash a message about goods the colony cannot sell.
+        // A trade session with no window: the same statics Dialog_Trade fills in, put back as they were
+        // when it closes. The game itself never clears them after a window closes, so a stale trader
+        // there is no reason to refuse: only an open Dialog_Trade is. It skips SetupWith, which would
+        // flash a message about goods the colony cannot sell.
         internal sealed class Session : IDisposable
         {
             public readonly TradeDeal Deal;
             public readonly Pawn Negotiator;
+            private readonly ITrader savedTrader;
+            private readonly Pawn savedNegotiator;
+            private readonly TradeDeal savedDeal;
+            private readonly bool savedGift;
 
-            public Session(ITrader trader, Pawn negotiator)
+            public Session(ITrader trader, Pawn negotiator) : this(trader, negotiator, () => new TradeDeal())
             {
-                if (TradeSession.Active || (Find.WindowStack != null && Find.WindowStack.WindowOfType<Dialog_Trade>() != null))
+            }
+
+            internal Session(ITrader trader, Pawn negotiator, Func<TradeDeal> makeDeal)
+            {
+                if (WindowOpen())
                 {
                     throw new BridgeException(409, "A trade window is open in game. Close it, or let the player finish, before agents trade.");
                 }
+                savedTrader = TradeSession.trader;
+                savedNegotiator = TradeSession.playerNegotiator;
+                savedDeal = TradeSession.deal;
+                savedGift = TradeSession.giftMode;
                 Negotiator = negotiator;
                 TradeSession.trader = trader;
                 TradeSession.playerNegotiator = negotiator;
                 TradeSession.giftMode = false;
                 try
                 {
-                    TradeSession.deal = new TradeDeal();
+                    TradeSession.deal = makeDeal();
                 }
                 catch
                 {
@@ -209,12 +227,24 @@ namespace RiMCP.Read
                 Deal = TradeSession.deal;
             }
 
+            private static bool WindowOpen()
+            {
+                try
+                {
+                    return Find.WindowStack != null && Find.WindowStack.WindowOfType<Dialog_Trade>() != null;
+                }
+                catch (NullReferenceException)
+                {
+                    return false;
+                }
+            }
+
             public void Dispose()
             {
-                TradeSession.Close();
-                TradeSession.playerNegotiator = null;
-                TradeSession.deal = null;
-                TradeSession.giftMode = false;
+                TradeSession.trader = savedTrader;
+                TradeSession.playerNegotiator = savedNegotiator;
+                TradeSession.deal = savedDeal;
+                TradeSession.giftMode = savedGift;
             }
         }
 
@@ -235,22 +265,30 @@ namespace RiMCP.Read
         // --- Tradeables ---
 
         // The rows of the deal, in a stable order, each under its key. Items key on def, stuff and
-        // quality, which is what the game groups them by apart from hit points; where one key still
-        // covers several tradeables (hit point bands, unique items) they are numbered #2, #3, ... in
-        // order of hit points, then age. Animals and people key on a thing id of theirs.
+        // quality, which is what the game groups them by apart from hit points. Where one key covers
+        // several tradeables (hit point bands, unique items such as genepacks) or the item never stacks
+        // (weapons and apparel), the key also carries the lowest thing number among the tradeable's
+        // things, which hauling or eating a stack does not change, and any thing of it finds it.
+        // Animals and people key on a thing id of theirs, found the same way.
         public static List<TradeRow> Rows(TradeDeal deal)
         {
             List<Tradeable> items = deal.AllTradeables.Where(each => each.IsThing && each.HasAnyThing && !each.IsCurrency).ToList();
             List<TradeRow> rows = new List<TradeRow>();
             foreach (IGrouping<string, Tradeable> group in items.GroupBy(BaseKey))
             {
-                List<Tradeable> ordered = group.OrderBy(each => each.AnyThing.HitPoints).ThenBy(each => each.AnyThing.thingIDNumber).ToList();
-                for (int i = 0; i < ordered.Count; i++)
+                bool several = group.Count() > 1;
+                foreach (Tradeable tradeable in group)
                 {
-                    rows.Add(new TradeRow { Key = i == 0 ? group.Key : group.Key + "#" + (i + 1), Tradeable = ordered[i] });
+                    bool byNumber = !(tradeable.AnyThing is Pawn) && (several || tradeable.AnyThing.def.stackLimit == 1);
+                    rows.Add(new TradeRow { Key = byNumber ? group.Key + "#" + Members(tradeable).Min(thing => thing.thingIDNumber) : group.Key, Tradeable = tradeable });
                 }
             }
             return rows.OrderBy(row => row.Key, StringComparer.Ordinal).ToList();
+        }
+
+        public static IEnumerable<Thing> Members(Tradeable tradeable)
+        {
+            return tradeable.thingsColony.Concat(tradeable.thingsTrader);
         }
 
         private static string BaseKey(Tradeable tradeable)
@@ -273,18 +311,47 @@ namespace RiMCP.Read
             return key.ToString();
         }
 
-        // A pawn's key names one pawn, but the game groups identical animals, so any pawn of the
-        // tradeable finds it.
+        private static string WithoutNumber(string key)
+        {
+            int hash = key.LastIndexOf('#');
+            int number;
+            return hash > 0 && int.TryParse(key.Substring(hash + 1), out number) ? key.Substring(0, hash) : key;
+        }
+
+        // A key names one thing of its tradeable, and the game groups things (identical animals, stacks),
+        // so any thing of the tradeable finds it, also after a stack was used up.
         public static TradeRow FindRow(List<TradeRow> rows, string key)
         {
             string wanted = key == null ? null : key.Trim();
+            if (string.IsNullOrEmpty(wanted))
+            {
+                return null;
+            }
             TradeRow row = rows.FirstOrDefault(each => each.Key == wanted);
-            if (row == null && wanted != null && wanted.StartsWith("pawn:", StringComparison.Ordinal))
+            if (row != null)
+            {
+                return row;
+            }
+            if (wanted.StartsWith("pawn:", StringComparison.Ordinal))
             {
                 string id = wanted.Substring(5);
-                row = rows.FirstOrDefault(each => each.Tradeable.thingsColony.Concat(each.Tradeable.thingsTrader).Any(thing => thing.ThingID == id));
+                return rows.FirstOrDefault(each => Members(each.Tradeable).Any(thing => thing.ThingID == id));
             }
-            return row;
+            int hash = wanted.LastIndexOf('#');
+            int number;
+            if (hash > 0 && int.TryParse(wanted.Substring(hash + 1), out number))
+            {
+                string baseKey = wanted.Substring(0, hash);
+                return rows.FirstOrDefault(each => WithoutNumber(each.Key) == baseKey && Members(each.Tradeable).Any(thing => thing.thingIDNumber == number));
+            }
+            return null;
+        }
+
+        // The rows now holding any of these things: what is left of a tradeable after a deal, whichever of
+        // its things the game used up.
+        public static List<TradeRow> RowsContaining(List<TradeRow> rows, ICollection<int> thingNumbers)
+        {
+            return rows.Where(row => Members(row.Tradeable).Any(thing => thingNumbers.Contains(thing.thingIDNumber))).ToList();
         }
 
         public static int ColonyCount(Tradeable tradeable)

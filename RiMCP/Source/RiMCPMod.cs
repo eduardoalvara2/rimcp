@@ -475,9 +475,9 @@ namespace RiMCP
             listing.Label("Off: agents use only the game's own options and buttons, each checked before it runs.");
             GUI.color = Color.white;
             listing.Gap();
-            listing.CheckboxLabeled("Allow test incidents (testing only)", ref Settings.AllowTestIncidents, "Lets agents with Full control fire a trade caravan, an orbital trader or a small raid on demand with fire_incident, to practise on. For testing only: leave it off in a colony you care about. No tool can turn it on.");
+            Settings.TestIncidentColony = listing.TextEntryLabeled("Test incidents in colony (testing only)", Settings.TestIncidentColony ?? "");
             GUI.color = Color.gray;
-            listing.Label("Off: fire_incident refuses and nothing reaches the game.");
+            listing.Label("Empty: fire_incident refuses. Type the exact name of one colony to let agents fire a trade caravan, orbital trader or small raid in that colony only, to practise on.");
             GUI.color = Color.white;
             listing.Gap();
             listing.CheckboxLabeled("RimMCP button in game", ref Settings.ShowQuickControl, "The button on the bottom bar that shows whether agents are on and working, and pauses them or changes the access level in a click.");
