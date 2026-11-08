@@ -67,6 +67,42 @@ namespace RiMCP.Command
         public Func<int> Activations;
         public Action Arm;
 
+        // A dialog's own action under the counting wrappers adapters put around it, so a dialog
+        // adapted again still finds the dialog's own code, a mod's included.
+        public static Delegate Unwrapped(Delegate action)
+        {
+            Counted wrapper;
+            while ((wrapper = action == null ? null : action.Target as Counted) != null)
+            {
+                action = wrapper.Original;
+            }
+            return action;
+        }
+
+        private static Action Wrap(Action original, Action count)
+        {
+            return new Counted(original, count).Run;
+        }
+
+        // A wrapper an adapter put around a dialog's action, known by its target.
+        private sealed class Counted
+        {
+            public readonly Action Original;
+            private readonly Action count;
+
+            public Counted(Action original, Action count)
+            {
+                Original = original;
+                this.count = count;
+            }
+
+            public void Run()
+            {
+                count();
+                Original();
+            }
+        }
+
         public static DialogAdapter For(Window window)
         {
             Dialog_NodeTree tree = window as Dialog_NodeTree;
@@ -149,7 +185,7 @@ namespace RiMCP.Command
                 {
                     DiaOption chosen = node().options[option.Index];
                     Action original;
-                    return originals.TryGetValue(chosen, out original) ? original : chosen.action;
+                    return Unwrapped(originals.TryGetValue(chosen, out original) ? original : chosen.action);
                 },
                 Activations = () => activations,
                 Arm = () =>
@@ -158,11 +194,7 @@ namespace RiMCP.Command
                     {
                         Action original = option.action;
                         originals[option] = original;
-                        option.action = () =>
-                        {
-                            activations++;
-                            original();
-                        };
+                        option.action = Wrap(original, () => activations++);
                     }
                 }
             };
@@ -177,11 +209,7 @@ namespace RiMCP.Command
                 { "b", box.buttonBAction },
                 { "c", box.buttonCAction }
             };
-            Func<Action, Action> counted = original => original == null ? null : (Action)(() =>
-            {
-                activations++;
-                original();
-            });
+            Func<Action, Action> counted = original => original == null ? null : Wrap(original, () => activations++);
             box.buttonAAction = counted(box.buttonAAction);
             box.buttonBAction = counted(box.buttonBAction);
             box.buttonCAction = counted(box.buttonCAction);
@@ -231,7 +259,7 @@ namespace RiMCP.Command
                     box.Close();
                 },
                 Covered = () => Covers(box),
-                Callback = option => originals[option.Id],
+                Callback = option => Unwrapped(originals[option.Id]),
                 Activations = () => activations
             };
         }
@@ -320,6 +348,11 @@ namespace RiMCP.Command
     {
         public const int MaxKept = 32;
         private static readonly List<Interaction> kept = new List<Interaction>();
+        // Windows still on screen that an interaction ever had, with why the last one ended, so a
+        // dialog left to the player is never taken back as the game's. Only the window and the
+        // reason are kept, for the loaded game, while the window is open.
+        public const int MaxOwned = 64;
+        private static readonly List<OwnedWindow> owned = new List<OwnedWindow>();
         private static int lastId;
         private static int lastPage;
 
@@ -335,7 +368,24 @@ namespace RiMCP.Command
         public static Interaction Start(string tool, string subject, DialogAdapter dialog, Thing selected = null, ActionOrigin origin = null)
         {
             Interaction interaction = new Interaction { Id = "dialog-" + (++lastId), Tool = tool, Subject = subject, Origin = origin, Game = Current.Game, Dialog = dialog, Selected = selected };
-            NewPage(interaction);
+            if (dialog.Window != null)
+            {
+                owned.RemoveAll(each => each.Window == dialog.Window);
+                owned.Add(new OwnedWindow { Window = dialog.Window, Game = Current.Game });
+                while (owned.Count > MaxOwned)
+                {
+                    owned.RemoveAt(0);
+                }
+            }
+            try
+            {
+                NewPage(interaction);
+            }
+            catch (Exception ex)
+            {
+                End(interaction, Interaction.Revoked, Unreadable(ex));
+                throw;
+            }
             kept.Add(interaction);
             while (kept.Count > MaxKept)
             {
@@ -356,15 +406,53 @@ namespace RiMCP.Command
 
         public static bool Owns(Window window)
         {
-            return kept.Any(interaction => interaction.State == Interaction.Open && interaction.Dialog.Window == window);
+            return Owning(window) != null;
         }
 
+        public static Interaction Owning(Window window)
+        {
+            return kept.FirstOrDefault(interaction => interaction.State == Interaction.Open && interaction.Dialog.Window == window);
+        }
+
+        // Whether an interaction ever had this window, and why the last one ended: null while one
+        // is open, or when the ending gave no reason.
+        public static bool EverOwned(Window window, out string reason)
+        {
+            OwnedWindow entry = window == null ? null : owned.FirstOrDefault(each => each.Window == window && ReferenceEquals(each.Game, Current.Game));
+            reason = entry == null ? null : entry.Reason;
+            return entry != null;
+        }
+
+        // A dialog that cannot be read, such as a mod's in an unexpected state, is left to the player
+        // instead of failing every read.
         public static void Update()
         {
+            WindowStack stack = Verse.Find.WindowStack;
+            owned.RemoveAll(each => !ReferenceEquals(each.Game, Current.Game) || stack != null && !stack.IsOpen(each.Window));
             foreach (Interaction interaction in kept.Where(each => each.State == Interaction.Open).ToList())
             {
-                Observe(interaction);
+                try
+                {
+                    Observe(interaction);
+                }
+                catch (Exception ex)
+                {
+                    End(interaction, Interaction.Revoked, Unreadable(ex));
+                }
             }
+        }
+
+        public static void Abandon(Interaction interaction, Exception ex)
+        {
+            if (interaction.State == Interaction.Open)
+            {
+                End(interaction, Interaction.Revoked, Unreadable(ex));
+            }
+        }
+
+        public static string Unreadable(Exception ex)
+        {
+            return "RimMCP could not read the dialog (" + ex.GetType().Name + ": " + ex.Message + "), so it is left to the player.";
         }
 
         public static void Observe(Interaction interaction)
@@ -555,6 +643,18 @@ namespace RiMCP.Command
         {
             interaction.State = state;
             interaction.Reason = reason;
+            OwnedWindow entry = interaction.Dialog.Window == null ? null : owned.FirstOrDefault(each => each.Window == interaction.Dialog.Window);
+            if (entry != null)
+            {
+                entry.Reason = reason;
+            }
+        }
+
+        private sealed class OwnedWindow
+        {
+            public Window Window;
+            public object Game;
+            public string Reason;
         }
     }
 }

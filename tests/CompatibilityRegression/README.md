@@ -27,7 +27,7 @@ $env:NUGET_PACKAGES = Join-Path $PWD '.nuget/packages'
 dotnet restore tests/CompatibilityRegression/CompatibilityRegression.csproj --source $env:NUGET_PACKAGES "-p:RimWorldManagedPath=$managed"
 ```
 
-The seventy-seven checks cover:
+The eighty-four checks cover:
 
 - Main-menu research listing, definition lookup, and definition search, including
   absence of invented `finished`/`progress` values and blockers, and `availableOnly`
@@ -102,6 +102,23 @@ The seventy-seven checks cover:
 - Single tools turned on or off as exceptions to their group: dropped when they agree
   with it, a group flipping when all its tools do, presets recognised again, and the
   access endpoint and the router following them.
+- The dialog, surgery, and mechanitor tools bound to their handlers, routes, and groups,
+  with string path captures (the proxy fills captures only from strings); a dialog the
+  game opened answered under `dismiss_dialog`'s access, so only with Decisions on;
+  `dismiss_dialog` refusing an answerable dialog and an unknown window, and a repeat
+  already satisfied; and surgery and mech commands refusing bad input and a missing map
+  before anything changes.
+- Which windows are the game's own, on windows made without the game: a dialog the game
+  opened is the agents', over the inspect pane or a main tab too, but not over the
+  player's own windows that pause the game, nor when it appeared just after the player's
+  input (simulated); the player's windows (another mod's settings included),
+  confirmations that cannot be undone, comms calls, and dialogs left to the player stay
+  the player's, until another game is loaded; RimMCP's settings are its own; and only a
+  mod's pausing window with a close button, or whose Escape only closes it, can be
+  dismissed, never the game's own. A dialog adapted again still finds its own
+  code under earlier wrappers, and a dialog that cannot be read is left to the player.
+  Listing and closing real windows, queuing surgeries, and changing control groups are
+  live-game tests.
 - Cell rectangles bounded, clipped to the map and de-duplicated; rejected cells
   all counted but listed up to a cap; and request ids: a retry returns the first
   result whatever its outcome (alreadySatisfied and rejected too) without the command

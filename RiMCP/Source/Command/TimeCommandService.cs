@@ -73,9 +73,17 @@ namespace RiMCP.Command
             // A dialog an agent's call opened holds the game paused until it is answered; a retry of
             // an earlier run still returns it.
             Interaction waiting = Interactions.OpenNow.FirstOrDefault();
-            if (waiting != null && AdvanceRunner.Recall(body.RequestId) == null)
+            bool retry = AdvanceRunner.Recall(body.RequestId) != null;
+            if (waiting != null && !retry)
             {
-                throw new CommandException(409, "A dialog opened by " + waiting.Tool + " (" + waiting.Id + ") is waiting for an answer; answer or cancel it with answer_dialog first.");
+                throw new CommandException(409, (waiting.Tool == DialogService.Tool ? "A dialog the game opened" : "A dialog opened by " + waiting.Tool) + " (" + waiting.Id + ") is waiting for an answer; answer or cancel it with answer_dialog first.");
+            }
+            // Any other window that pauses the game, such as a scenario's intro, would hold the run
+            // at its first tick. list_dialogs lists each of them.
+            Window holding = DialogService.Pausing().FirstOrDefault(window => !DialogService.IsOwn(window) && !Interactions.Owns(window));
+            if (holding != null && !retry)
+            {
+                throw new CommandException(409, DialogService.HoldingMessage(holding));
             }
 
             bool created;
@@ -123,7 +131,10 @@ namespace RiMCP.Command
                     Dto.Field("tick", ticks.TicksGame),
                     Dto.Field("speed", ticks.CurTimeSpeed.ToString()),
                     Dto.Field("paused", ticks.Paused),
-                    Dto.Field("forcedNormalSpeed", ticks.slower.ForcedNormalSpeed))),
+                    Dto.Field("forcedNormalSpeed", ticks.slower.ForcedNormalSpeed),
+                    // Windows that pause the game whatever its speed; list_dialogs shows all but
+                    // RimMCP's own, marked RimMCP:.
+                    Dto.Field("heldByWindows", DialogService.Pausing().Select(DialogService.PausingName).ToArray()))),
                 Dto.Field("run", run == null ? null : SerializeRun(run))));
         }
 

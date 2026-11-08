@@ -219,11 +219,18 @@ internal static class Program
         {
             IEnumerable tools = (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null);
             Dictionary<string, int> counts = tools.Cast<object>().GroupBy(tool => Field<string>(tool, "Group") ?? "(none)").ToDictionary(group => group.Key, group => group.Count());
-            var expected = new Dictionary<string, int> { { "observe", 38 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 12 }, { "orders", 3 }, { "pawnControl", 4 }, { "decisions", 2 }, { "gameSettings", 1 }, { "gameSetup", 14 } };
+            var expected = new Dictionary<string, int> { { "observe", 41 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 3 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 1 }, { "gameSetup", 14 } };
             int count;
             Check(counts.Count == expected.Count && expected.All(pair => counts.TryGetValue(pair.Key, out count) && count == pair.Value),
                 "group sizes: " + string.Join(", ", counts.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
         });
+        Test("the dialog, surgery, and mechanitor tools reach their handlers on their routes and groups", CheckForkTools);
+        Test("game dialogs are answered under dismiss_dialog's access, and dismiss_dialog closes only listed windows", CheckGameDialogs);
+        Test("surgery and mech commands refuse bad input and a missing map before anything changes", CheckForkRefusals);
+        Test("only windows the game opened on its own are the agents' to answer or close", CheckWindowClassification);
+        Test("a dialog adapted again still finds its own code, so a mod's stays a mod's", CheckDialogUnwrap);
+        Test("dismissing a window again is already satisfied", CheckIdempotentDismiss);
+        Test("a dialog that cannot be read is left to the player", CheckUnreadableDialog);
         Test("presets choose groups, and settings saved before presets migrate", CheckAccessPresets);
         Test("operations run one at a time, a step per frame, and stop at a safe step when cancelled or revoked", CheckOperationRunner);
         Test("operation retries return the original operation or an expired answer, for the last 1,000 requests", CheckOperationRetries);
@@ -2095,6 +2102,250 @@ internal static class Program
         ExpectCommandError(400, () => cells(Enumerable.Range(0, 2).Select(i => rect(0, 0, 60, 31)).ToArray()));
     }
 
+    // The proxy fills path captures only from strings, so the new tools take them as strings.
+    private static void CheckForkTools()
+    {
+        IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
+        var expected = new[]
+        {
+            new[] { "list_dialogs", "dialogs", "observe", "GET", "/v1/dialogs", "DialogService.ListDialogs" },
+            new[] { "dismiss_dialog", "dismiss-dialog", "decisions", "POST", "/v1/dialogs/{windowId}/dismiss", "DialogService.DismissDialog" },
+            new[] { "list_surgeries", "surgeries", "observe", "GET", "/v1/pawns/{pawnId}/surgeries", "SurgeryService.ListSurgeries" },
+            new[] { "add_surgery_bill", "add-surgery-bill", "administration", "POST", "/v1/pawns/{pawnId}/surgeries", "SurgeryService.AddSurgeryBill" },
+            new[] { "get_mechanitor", "mechanitor", "observe", "GET", "/v1/pawns/{pawnId}/mechs", "MechanitorService.GetMechanitor" },
+            new[] { "set_mech_control", "set-mech-control", "pawnControl", "PUT", "/v1/pawns/{pawnId}/mechs/{controlGroup}", "MechanitorService.SetMechControl" }
+        };
+        foreach (string[] row in expected)
+        {
+            object spec = Tool(row[0]);
+            Check(Field<string>(spec, "HandlerId") == row[1] && Field<string>(spec, "Group") == row[2] && Field<string>(spec, "Method") == row[3] && Field<string>(spec, "PathTemplate") == row[4],
+                row[0] + " is " + Field<string>(spec, "HandlerId") + " in " + Field<string>(spec, "Group") + " at " + Field<string>(spec, "Method") + " " + Field<string>(spec, "PathTemplate"));
+            Delegate handler = handlers[row[1]] as Delegate;
+            Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == row[5], row[0] + " must be handled by " + row[5]);
+            Dictionary<string, object> properties = ToolProperties(spec);
+            foreach (string capture in row[4].Split('/').Where(segment => segment.StartsWith("{")).Select(segment => segment.Trim('{', '}')))
+            {
+                Check((string)((Dictionary<string, object>)properties[capture])["type"] == "string", row[0] + "'s path capture " + capture + " must be a string");
+            }
+        }
+        Check(Field<string[]>(Tool("set_mech_control"), "BodyKeys").SequenceEqual(new[] { "mapId", "workMode", "assign", "expectedLoadId" }), "set_mech_control sends its fields in the body");
+        Check(Field<string[]>(Tool("add_surgery_bill"), "BodyKeys").SequenceEqual(new[] { "mapId", "recipeDefName", "partIndex", "requestId", "expectedLoadId" }), "add_surgery_bill sends its fields in the body");
+    }
+
+    // A dialog the game opened becomes an interaction under dismiss_dialog, so answering it needs
+    // decisions. Without a window stack, as here, nothing is on screen.
+    private static void CheckGameDialogs()
+    {
+        Type runner = mod.GetType("RiMCP.Command.Interactions", true);
+        runner.GetMethod("Reset", Static).Invoke(null, null);
+        Func<FakeDialog, object> start = fake => runner.GetMethod("Start", Static).Invoke(null, new object[] { "dismiss_dialog", "Dialog_NodeTree", FakeAdapter(fake), null, null });
+        Func<object, object> answer = dialog => Invoke("RiMCP.Command.DecisionCommandService", "AnswerDialog",
+            Request("/v1/interactions/" + Field<string>(dialog, "Id") + "/answer", "POST", "{\"page\":" + Field<int>(dialog, "Page") + ",\"option\":\"1\"}"), Route("interactionId", Field<string>(dialog, "Id")));
+        Func<string, object> dismiss = windowId => Invoke("RiMCP.Command.DialogService", "DismissDialog", Request("/v1/dialogs/" + windowId + "/dismiss", "POST", "{}"), Route("windowId", windowId));
+        try
+        {
+            Dictionary<string, object> listed = Data(Call("DialogService", "ListDialogs", "/v1/dialogs", null, null, "RiMCP.Command."));
+            Check(Rows(listed["dialogs"]).Count == 0 && Rows(listed["unsupported"]).Count == 0 && !(bool)listed["blocksTime"], "with no windows nothing is listed or pausing");
+
+            var refused = new FakeDialog();
+            object held = start(refused);
+            ExpectCommandError(409, () => dismiss(Field<string>(held, "Id")));
+            ExpectCommandError(404, () => dismiss("window-999"));
+            SetAccess("custom", AllGroups().Where(group => group != "decisions").ToArray());
+            ExpectCommandError(403, () => answer(held));
+            Check(refused.Chosen.Count == 0, "a game dialog is not answered while decisions are off");
+
+            SetAccess("full", AllGroups());
+            var allowed = new FakeDialog();
+            object open = start(allowed);
+            object answered = answer(open);
+            Check((int)answered.GetType().GetField("StatusCode").GetValue(answered) == 200 && allowed.Chosen.SequenceEqual(new[] { "1" }), "a game dialog is answered with decisions on");
+        }
+        finally
+        {
+            SetAccess("full", AllGroups());
+            runner.GetMethod("Reset", Static).Invoke(null, null);
+        }
+    }
+
+    private static void CheckForkRefusals()
+    {
+        ExpectBridgeError(409, () => Invoke("RiMCP.Command.SurgeryService", "ListSurgeries", Request("/v1/pawns/Human1/surgeries"), Route("pawnId", "Human1")));
+        ExpectCommandError(400, () => Invoke("RiMCP.Command.SurgeryService", "AddSurgeryBill", Request("/v1/pawns/Human1/surgeries", "POST", "{\"partIndex\":3}"), Route("pawnId", "Human1")));
+        ExpectCommandError(409, () => Invoke("RiMCP.Command.SurgeryService", "AddSurgeryBill", Request("/v1/pawns/Human1/surgeries", "POST", "{\"recipeDefName\":\"RemoveBodyPart\",\"partIndex\":3}"), Route("pawnId", "Human1")));
+        ExpectBridgeError(409, () => Invoke("RiMCP.Command.MechanitorService", "GetMechanitor", Request("/v1/pawns/Human1/mechs"), Route("pawnId", "Human1")));
+        Func<string, string, object> setMechs = (group, body) =>
+        {
+            var values = new Dictionary<string, string> { { "pawnId", "Human1" }, { "controlGroup", group } };
+            object route = Activator.CreateInstance(mod.GetType("RiMCP.Bridge.RouteMatch", true), new object[] { values });
+            return Invoke("RiMCP.Command.MechanitorService", "SetMechControl", Request("/v1/pawns/Human1/mechs/" + group, "PUT", body), route);
+        };
+        ExpectCommandError(400, () => setMechs("0", "{\"workMode\":\"Recharge\"}"));
+        ExpectCommandError(400, () => setMechs("first", "{\"workMode\":\"Recharge\"}"));
+        ExpectCommandError(400, () => setMechs("1", "{\"assign\":[]}"));
+        ExpectCommandError(409, () => setMechs("1", "{\"workMode\":\"Recharge\"}"));
+    }
+
+    // Which windows the game opened on its own, as list_dialogs, dismiss_dialog, and advance_time
+    // tell them apart, on windows made without the game running.
+    private static void CheckWindowClassification()
+    {
+        Type service = mod.GetType("RiMCP.Command.DialogService", true);
+        Func<Window, Window[], string> playerOnly = (window, below) => (string)service.GetMethod("PlayerOnly", Static).Invoke(null, new object[] { window, below });
+        Func<Window, Window[], string> dismissRefusal = (window, below) => (string)service.GetMethod("DismissRefusal", Static).Invoke(null, new object[] { window, below });
+        Func<Window, bool> isOwn = window => (bool)service.GetMethod("IsOwn", Static).Invoke(null, new object[] { window });
+        Window[] none = new Window[0];
+
+        Dialog_NodeTree intro = Blank<Dialog_NodeTree>();
+        intro.forcePause = true;
+        Check(playerOnly(intro, none) == null, "a dialog the game opened on its own is the agents'");
+        Check(playerOnly(intro, new Window[] { Blank<MainTabWindow_Inspect>() }) == null, "the inspect pane under a dialog does not make it the player's");
+        Check(playerOnly(intro, new Window[] { Blank<MainTabWindow_Work>() }) == null, "an open main tab that does not pause the game does not make a dialog over it the player's");
+        Dialog_Options options = Blank<Dialog_Options>();
+        options.forcePause = true;
+        Dialog_Trade trade = Blank<Dialog_Trade>();
+        trade.forcePause = true;
+        Check(playerOnly(intro, new Window[] { options }) != null && playerOnly(intro, new Window[] { trade }) != null, "a dialog over the player's own window that pauses the game is the player's");
+        intro.doCloseX = true;
+        Check((dismissRefusal(intro, none) ?? "").Contains("game's own windows"), "the game's own windows, which may hold the player's changes, are not dismissed");
+        RegressionNotice closed = Blank<RegressionNotice>();
+        closed.forcePause = true;
+        Check((dismissRefusal(closed, none) ?? "").Contains("no close control"), "a mod's window without a close control cannot be dismissed");
+
+        // A window that appears just after the player clicked or pressed a key is the player's.
+        Type origins = mod.GetType("RiMCP.Command.WindowOrigins", true);
+        MethodInfo observe = origins.GetMethod("Observe", Static);
+        try
+        {
+            origins.GetMethod("Reset", Static).Invoke(null, null);
+            origins.GetMethod("NoteInput", Static, null, new[] { typeof(int) }, null).Invoke(null, new object[] { 100 });
+            Dialog_MessageBox psycast = Blank<Dialog_MessageBox>();
+            psycast.forcePause = true;
+            observe.Invoke(null, new object[] { new List<Window> { psycast }, 102 });
+            Check(playerOnly(psycast, none) != null, "a confirmation that appears just after the player's click is the player's");
+            Dialog_MessageBox later = Blank<Dialog_MessageBox>();
+            later.forcePause = true;
+            observe.Invoke(null, new object[] { new List<Window> { later }, 300 });
+            Check(playerOnly(later, none) == null, "a window that appears with no input from the player is the game's");
+        }
+        finally
+        {
+            origins.GetMethod("Reset", Static).Invoke(null, null);
+        }
+
+        Check(playerOnly(Blank<Dialog_Negotiation>(), none) != null, "a comms console call is the player's");
+        Dialog_MessageBox destructive = Blank<Dialog_MessageBox>();
+        destructive.forcePause = true;
+        destructive.buttonADestructive = true;
+        Check(playerOnly(destructive, none) != null && dismissRefusal(destructive, none) != null, "a confirmation of something that cannot be undone is the player's");
+        Dialog_MessageBox notice = Blank<Dialog_MessageBox>();
+        notice.forcePause = true;
+        notice.closeOnCancel = true;
+        Check(playerOnly(notice, none) == null, "an ordinary message box the game opened is the agents'");
+        RegressionCancelNotice ownCancel = Blank<RegressionCancelNotice>();
+        ownCancel.forcePause = true;
+        ownCancel.closeOnCancel = true;
+        Check((dismissRefusal(ownCancel, none) ?? "").Contains("Escape key does more"), "a window whose Escape runs its own code is not dismissed");
+        RegressionNotice plain = Blank<RegressionNotice>();
+        plain.forcePause = true;
+        plain.closeOnCancel = true;
+        Check(dismissRefusal(plain, none) == null, "a window whose Escape only closes it can be dismissed");
+        plain.forcePause = false;
+        Check(dismissRefusal(plain, none) != null, "a window that does not pause the game is left to the player");
+
+        Check(playerOnly(Blank<Dialog_Options>(), none) != null && playerOnly(Blank<Dialog_Trade>(), none) != null, "the player's own windows are the player's");
+        FieldInfo settingsMod = typeof(Dialog_ModSettings).GetField("mod", BindingFlags.Instance | BindingFlags.NonPublic);
+        Dialog_ModSettings ours = Blank<Dialog_ModSettings>();
+        settingsMod.SetValue(ours, FormatterServices.GetUninitializedObject(mod.GetType("RiMCP.RiMCPMod", true)));
+        Dialog_ModSettings theirs = Blank<Dialog_ModSettings>();
+        settingsMod.SetValue(theirs, FormatterServices.GetUninitializedObject(typeof(RegressionMod)));
+        Check(isOwn(ours) && !isOwn(theirs), "RimMCP's settings are its own window, another mod's are not");
+        Check(playerOnly(theirs, none) != null, "another mod's settings are the player's");
+
+        // A dialog an agent's call opened, then left to the player, is never taken back as the game's.
+        Type runner = mod.GetType("RiMCP.Command.Interactions", true);
+        runner.GetMethod("Reset", Static).Invoke(null, null);
+        Dialog_NodeTree left = Blank<Dialog_NodeTree>();
+        left.forcePause = true;
+        left.doCloseX = true;
+        object adapter = FakeAdapter(new FakeDialog());
+        adapter.GetType().GetField("Window").SetValue(adapter, left);
+        object interaction = runner.GetMethod("Start", Static).Invoke(null, new object[] { "use_gizmo", "A mod's question", adapter, null, null });
+        Check(playerOnly(left, none) == null, "an open interaction's window is not refused for having one");
+        Type interactionType = mod.GetType("RiMCP.Command.Interaction", true);
+        ParameterExpression each = Expression.Parameter(interactionType);
+        runner.GetMethod("Revoke", Static).Invoke(null, new object[] { Expression.Lambda(typeof(Func<,>).MakeGenericType(interactionType, typeof(bool)), Expression.Constant(true), each).Compile(), "Turned off." });
+        Check(Field<string>(interaction, "State") == "revoked" && playerOnly(left, none) != null && dismissRefusal(left, none) != null, "a window left to the player stays the player's");
+        try
+        {
+            Current.Game = (Game)FormatterServices.GetUninitializedObject(typeof(Game));
+            Check(playerOnly(left, none) == null, "what an interaction had in another game is forgotten");
+        }
+        finally
+        {
+            Current.Game = null;
+        }
+        runner.GetMethod("Reset", Static).Invoke(null, null);
+    }
+
+    // A dialog adapted again still finds the dialog's own code under earlier adapters' wrappers, so
+    // a mod's dialog stays a mod's.
+    private static void CheckDialogUnwrap()
+    {
+        Dialog_MessageBox box = Blank<Dialog_MessageBox>();
+        Action own = () => { };
+        box.buttonAAction = own;
+        Type adapterType = mod.GetType("RiMCP.Command.DialogAdapter", true);
+        object option = Activator.CreateInstance(mod.GetType("RiMCP.Command.DialogOption", true), "a", 0, "OK", null);
+        Func<object, Delegate> callback = adapter => (Delegate)((Delegate)adapterType.GetField("Callback").GetValue(adapter)).DynamicInvoke(option);
+        MethodInfo adapt = adapterType.GetMethod("For", Static);
+        object first = adapt.Invoke(null, new object[] { box });
+        Check(box.buttonAAction != own, "the adapter counts the dialog's answers");
+        object second = adapt.Invoke(null, new object[] { box });
+        Check(ReferenceEquals(callback(first), own) && ReferenceEquals(callback(second), own), "every adapter finds the dialog's own code");
+    }
+
+    // Closing a window twice: the second time it is already closed, not unknown.
+    private static void CheckIdempotentDismiss()
+    {
+        Type service = mod.GetType("RiMCP.Command.DialogService", true);
+        service.GetMethod("Reset", Static).Invoke(null, null);
+        try
+        {
+            Type keptType = mod.GetType("RiMCP.Command.DialogService+KeptWindow", true);
+            object entry = Activator.CreateInstance(keptType, true);
+            keptType.GetField("Id").SetValue(entry, "window-77");
+            keptType.GetField("Window").SetValue(entry, Blank<RegressionNotice>());
+            keptType.GetField("Dismissed").SetValue(entry, true);
+            ((IList)service.GetField("kept", Static).GetValue(null)).Add(entry);
+            object response = Invoke("RiMCP.Command.DialogService", "DismissDialog", Request("/v1/dialogs/window-77/dismiss", "POST", "{}"), Route("windowId", "window-77"));
+            var json = Json.Deserialize<Dictionary<string, object>>((string)response.GetType().GetField("Body").GetValue(response));
+            Check((int)response.GetType().GetField("StatusCode").GetValue(response) == 200 && !(bool)json["changed"] && (bool)Data(json)["alreadySatisfied"], "a repeat dismiss is already satisfied");
+        }
+        finally
+        {
+            service.GetMethod("Reset", Static).Invoke(null, null);
+        }
+    }
+
+    // A dialog that stops being readable is left to the player instead of failing every read.
+    private static void CheckUnreadableDialog()
+    {
+        Type runner = mod.GetType("RiMCP.Command.Interactions", true);
+        runner.GetMethod("Reset", Static).Invoke(null, null);
+        var broken = new FakeDialog();
+        object interaction = runner.GetMethod("Start", Static).Invoke(null, new object[] { "dismiss_dialog", "Dialog_NodeTree", FakeAdapter(broken), null, null });
+        broken.Options = null;
+        runner.GetMethod("Update", Static).Invoke(null, null);
+        Check(Field<string>(interaction, "State") == "revoked" && Field<string>(interaction, "Reason").Contains("could not read"), "an unreadable dialog is left to the player: " + Field<string>(interaction, "Reason"));
+        runner.GetMethod("Reset", Static).Invoke(null, null);
+    }
+
+    private static T Blank<T>()
+    {
+        return (T)FormatterServices.GetUninitializedObject(typeof(T));
+    }
+
     private static object Tool(string name)
     {
         return ((IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null)).Cast<object>().Single(tool => Field<string>(tool, "Name") == name);
@@ -2559,4 +2810,33 @@ public sealed class RegressionAlwaysMatches : SpecialThingFilterWorker
 // A modded-style def subclass: its defs are stored in DefDatabase<WorkTypeDef>.
 internal sealed class ProbeWorkTypeDef : WorkTypeDef
 {
+}
+
+// A window whose Escape only closes it, as Window's own does.
+public sealed class RegressionNotice : Window
+{
+    public override void DoWindowContents(UnityEngine.Rect inRect)
+    {
+    }
+}
+
+// A mod window whose Escape runs its own code.
+public sealed class RegressionCancelNotice : Window
+{
+    public override void DoWindowContents(UnityEngine.Rect inRect)
+    {
+    }
+
+    public override void OnCancelKeyPressed()
+    {
+        Close(false);
+    }
+}
+
+// Another mod, for its settings window.
+public sealed class RegressionMod : Mod
+{
+    public RegressionMod(ModContentPack content) : base(content)
+    {
+    }
 }

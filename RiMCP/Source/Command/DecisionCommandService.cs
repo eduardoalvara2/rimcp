@@ -60,7 +60,7 @@ namespace RiMCP.Command
                 Interaction interaction = Interactions.Find(interactionId);
                 if (interaction == null)
                 {
-                    throw new CommandException(404, "No dialog '" + interactionId + "'. get_events lists the dialogs agents have open.");
+                    throw new CommandException(404, "No dialog '" + interactionId + "'. list_dialogs lists the dialogs open.");
                 }
                 if (!BridgeRuntime.Access.AllowsTool(interaction.Tool))
                 {
