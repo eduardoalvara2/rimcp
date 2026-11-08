@@ -24,7 +24,8 @@ namespace RiMCP.Command
         // reached is a step up. Hunger says what it is.
         public int Starvation;
         public string Hunger;
-        // Unable to reach any bed or food for a sustained time, checked every 250 ticks.
+        // Unable to reach any bed or food for a sustained time, checked every 250 ticks and only
+        // for a run whose stopOn has stuck.
         public bool Stuck;
         public string StuckDetail;
     }
@@ -47,8 +48,8 @@ namespace RiMCP.Command
         public string Threat;
         // Label of a home map whose stored food is below the Low food threshold, or null.
         public string LowFood;
-        // How big the largest fire in a home map's Home area is (see AdvanceRun.FireLevel), and
-        // where it burns.
+        // The fire episode's level (see FireWatch), and where the largest fire on the ground in a
+        // home map's Home area burns now.
         public int FireLevel;
         public string Fire;
         public readonly Dictionary<string, ColonistState> Colonists = new Dictionary<string, ColonistState>();
@@ -72,8 +73,10 @@ namespace RiMCP.Command
         public const int MaxEvents = 50;
         // Also the order in which simultaneous events are reported.
         public static readonly string[] Conditions = { "death", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter", "letter" };
-        // Everything a player stops for, which is all but letter: fire and starving are the game's own
-        // Fire in home area and Starvation alerts, and stuck is a colonist the game does not report.
+        // Everything a player stops for, which is all but letter: fire is a fire on the ground in a
+        // home map's Home area (the game's Fire in home area alert also counts other maps' and burning
+        // pawns), starving is the game's Starvation alert, and stuck is a colonist the game does not
+        // report.
         public static readonly string[] DefaultStopOn = { "death", "downed", "injured", "starving", "stuck", "mentalBreak", "fire", "hostiles", "lowFood", "threatLetter" };
         // Fire cells burning in a Home area at which fire stops a run again as it grows.
         public static readonly int[] FireSizes = { 1, 10, 50 };
@@ -276,11 +279,45 @@ namespace RiMCP.Command
         }
     }
 
+    // One fire episode in the Home areas: the highest of FireSizes reached since fire last burned
+    // there, so a fire that shrinks and grows again while colonists fight it, or a run that starts
+    // during it, stops a run once for each size. The episode ends only once no fire has burned in a
+    // Home area for QuietTicks, so a fire flickering out and back is still the same fire.
+    internal sealed class FireWatch
+    {
+        public const int QuietTicks = 4 * GenTicks.TickRareInterval;
+
+        public int Level;
+        private int quietSince = -1;
+
+        public int Note(int tick, int cells)
+        {
+            if (cells > 0)
+            {
+                quietSince = -1;
+                Level = Math.Max(Level, AdvanceRun.FireLevel(cells));
+            }
+            else if (Level > 0)
+            {
+                if (quietSince < 0 || tick < quietSince)
+                {
+                    quietSince = tick;
+                }
+                else if (tick - quietSince >= QuietTicks)
+                {
+                    Level = 0;
+                    quietSince = -1;
+                }
+            }
+            return Level;
+        }
+    }
+
     // Whether one colonist has been trapped long enough to count as stuck. Each check says whether
     // the colonist is trapped now: awake, undrafted, not downed, on a home map, and unable to reach
     // any of its beds or food. Asleep, drafted, downed, or able to reach one starts it over, and so
-    // does a gap between checks longer than they come during a run, such as the player playing
-    // between runs.
+    // does a gap between checks longer than they come during a run, or time going back. The timers
+    // start over with each run, so the hour is always counted within a run.
     internal sealed class StuckTimer
     {
         public const int SustainTicks = GenDate.TicksPerHour;
@@ -306,6 +343,28 @@ namespace RiMCP.Command
             Detail = Stuck ? where + " for " + ((double)(tick - Since) / GenDate.TicksPerHour).ToString("0.0", CultureInfo.InvariantCulture) + " in-game hours" : null;
             return Stuck;
         }
+
+        // The targets a trapped check tries: one per place (a district, where reaching one cell
+        // reaches them all), nearest first, at most cap. A target with no place of its own, such
+        // as food on a shelf, is its own.
+        public static List<T> Nearest<T>(IEnumerable<T> targets, Func<T, object> place, Func<T, float> distance, int cap)
+        {
+            HashSet<object> seen = new HashSet<object>();
+            List<T> picked = new List<T>();
+            foreach (T target in targets.OrderBy(distance))
+            {
+                object key = place(target);
+                if (key == null || seen.Add(key))
+                {
+                    picked.Add(target);
+                    if (picked.Count >= cap)
+                    {
+                        break;
+                    }
+                }
+            }
+            return picked;
+        }
     }
 
     // Owns advance runs. Everything here runs on the main thread; HTTP threads only wait on a
@@ -326,11 +385,16 @@ namespace RiMCP.Command
         private static int foodCheckedTick = int.MinValue;
         private static string lowFood;
         // Reachability costs too much for every frame too, so colonists are checked for being trapped
-        // every 250 ticks; their timers carry from run to run within one loaded game.
+        // every 250 ticks, and only for a run whose stopOn has stuck; each run starts their timers
+        // over. A check tries one target per place, nearest first, up to StuckTargets.
         private const int StuckCheckInterval = GenTicks.TickRareInterval;
+        private const int StuckTargets = 24;
         private static int stuckCheckedTick = int.MinValue;
         private static readonly Dictionary<Pawn, StuckTimer> stuck = new Dictionary<Pawn, StuckTimer>();
-        private static object stuckGame;
+        private static bool watchStuck;
+        // The fire episode carries from run to run within one loaded game.
+        private static FireWatch fire = new FireWatch();
+        private static object fireGame;
 
         // Replaceable so tests can simulate an observation failure.
         internal static Func<AdvanceObservation> Observer = Observe;
@@ -374,6 +438,8 @@ namespace RiMCP.Command
             tracked = new List<Pawn>();
             foodCheckedTick = int.MinValue;
             stuckCheckedTick = int.MinValue;
+            stuck.Clear();
+            watchStuck = stopOn.Contains("stuck");
             AdvanceObservation baseline = Observe();
             TickManager ticks = Find.TickManager;
             ticks.CurTimeSpeed = speed;
@@ -512,7 +578,7 @@ namespace RiMCP.Command
             }
             observation.LowFood = lowFood;
             ObserveFire(observation);
-            if (observation.Tick < stuckCheckedTick || observation.Tick >= stuckCheckedTick + StuckCheckInterval)
+            if (watchStuck && (observation.Tick < stuckCheckedTick || observation.Tick >= stuckCheckedTick + StuckCheckInterval))
             {
                 stuckCheckedTick = observation.Tick;
                 CheckStuck(pawns, observation.Tick);
@@ -538,10 +604,19 @@ namespace RiMCP.Command
             return observation;
         }
 
-        // Fires in the Home area of a home map, as the game's Fire in home area alert finds them
-        // (unfogged cells only), where colonists fight fires; the largest such fire is reported.
+        // Cells burning on the ground in the Home area of each home map (the player's settlements),
+        // unfogged ones only, where colonists fight fires; fires on pawns, such as a burning
+        // colonist, are left to injured. Maps that are not homes are not watched. The largest is
+        // reported, and the episode's level is what stops a run.
         private static void ObserveFire(AdvanceObservation observation)
         {
+            if (!ReferenceEquals(fireGame, Current.Game))
+            {
+                fire = new FireWatch();
+                fireGame = Current.Game;
+            }
+            int largest = 0;
+            string where = null;
             foreach (Map map in Find.Maps)
             {
                 if (!map.IsPlayerHome)
@@ -556,37 +631,34 @@ namespace RiMCP.Command
                 Area_Home home = map.areaManager.Home;
                 int cells = 0;
                 Thing first = null;
-                foreach (Thing fire in fires)
+                foreach (Thing burning in fires)
                 {
-                    if (home != null && home[fire.Position] && !fire.Position.Fogged(map))
+                    Fire ground = burning as Fire;
+                    if (home != null && (ground == null || !(ground.parent is Pawn)) && home[burning.Position] && !burning.Position.Fogged(map))
                     {
                         cells++;
-                        first = first ?? fire;
+                        first = first ?? burning;
                     }
                 }
-                int level = AdvanceRun.FireLevel(cells);
-                if (level > observation.FireLevel)
+                if (cells > largest)
                 {
-                    observation.FireLevel = level;
-                    observation.Fire = cells + (cells == 1 ? " cell" : " cells") + " burning in the Home area of " + MapLabel(map) + ", one at " + first.Position.x + "," + first.Position.z;
+                    largest = cells;
+                    where = cells + (cells == 1 ? " cell" : " cells") + " burning in the Home area of " + MapLabel(map) + ", one at " + first.Position.x + "," + first.Position.z;
                 }
             }
+            observation.FireLevel = fire.Note(observation.Tick, largest);
+            observation.Fire = where;
         }
 
         // Each colonist trapped now: awake, undrafted and not downed on a home map that has beds or
         // food, and unable to reach any of them. The timers decide when that has lasted.
         private static void CheckStuck(List<Pawn> pawns, int tick)
         {
-            if (!ReferenceEquals(stuckGame, Current.Game))
-            {
-                stuck.Clear();
-                stuckGame = Current.Game;
-            }
             foreach (Pawn gone in stuck.Keys.Where(pawn => !pawns.Contains(pawn)).ToList())
             {
                 stuck.Remove(gone);
             }
-            Dictionary<Map, List<Thing>> targets = new Dictionary<Map, List<Thing>>();
+            Dictionary<Map, List<KeyValuePair<Thing, District>>> targets = new Dictionary<Map, List<KeyValuePair<Thing, District>>>();
             foreach (Pawn pawn in pawns)
             {
                 StuckTimer timer;
@@ -598,12 +670,14 @@ namespace RiMCP.Command
                 bool trapped = false;
                 if (pawn.Spawned && pawn.Map.IsPlayerHome && !pawn.Dead && !pawn.Downed && !pawn.Drafted && pawn.Awake())
                 {
-                    List<Thing> reachable;
-                    if (!targets.TryGetValue(pawn.Map, out reachable))
+                    List<KeyValuePair<Thing, District>> places;
+                    if (!targets.TryGetValue(pawn.Map, out places))
                     {
-                        targets[pawn.Map] = reachable = BedsAndFood(pawn.Map);
+                        targets[pawn.Map] = places = BedsAndFood(pawn.Map);
                     }
-                    trapped = reachable.Count > 0 && !reachable.Any(target => pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly));
+                    IntVec3 from = pawn.Position;
+                    List<KeyValuePair<Thing, District>> tried = StuckTimer.Nearest(places, place => place.Value, place => (place.Key.Position - from).LengthHorizontalSquared, StuckTargets);
+                    trapped = tried.Count > 0 && !tried.Any(place => pawn.CanReach(place.Key, PathEndMode.Touch, Danger.Deadly));
                     if (trapped)
                     {
                         where = "cannot reach any bed or food from " + pawn.Position.x + "," + pawn.Position.z;
@@ -613,9 +687,9 @@ namespace RiMCP.Command
             }
         }
 
-        // The colony's beds for people and the food people eat, unfogged, beds first since there
-        // are fewer of them.
-        private static List<Thing> BedsAndFood(Map map)
+        // The colony's beds for people and the food people eat, unfogged, each with the district it
+        // is in, null where it has none, such as food on a shelf.
+        private static List<KeyValuePair<Thing, District>> BedsAndFood(Map map)
         {
             List<Thing> targets = map.listerBuildings.allBuildingsColonist
                 .OfType<Building_Bed>()
@@ -624,7 +698,7 @@ namespace RiMCP.Command
                 .ToList();
             targets.AddRange(map.listerThings.ThingsInGroup(ThingRequestGroup.FoodSourceNotPlantOrTree)
                 .Where(food => !(food is Corpse) && (food.def.ingestible == null || food.def.ingestible.HumanEdible) && !food.Position.Fogged(map)));
-            return targets;
+            return targets.Select(target => new KeyValuePair<Thing, District>(target, target.Position.GetDistrict(map))).ToList();
         }
 
         private static string MapLabel(Map map)

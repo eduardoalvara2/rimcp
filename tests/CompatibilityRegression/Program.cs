@@ -199,6 +199,8 @@ internal static class Program
         Test("advance stops when a fire starts in the Home area and again as it grows, not on one burning at the start", CheckFireStops);
         Test("advance stops when a colonist starts starving, malnutrition worsens, or a colonist becomes stuck", CheckColonistStops);
         Test("a colonist is stuck only after an hour trapped, and starts over when freed or after a gap", CheckStuckTimer);
+        Test("a fire episode stops once per size however it flickers, and ends only once it has been out a while", CheckFireEpisode);
+        Test("a stuck check tries one target per place, nearest first, up to a cap", CheckStuckTargets);
         Test("fire, starving, and stuck stop by default, and the schema offers exactly the run's conditions", CheckStopConditions);
         Test("advance retries are recognised across recent runs and need matching arguments", CheckAdvanceReceipts);
         Test("get_advance answers for the requested run, and a deferred reply stays bound to it", CheckAdvanceWaitBinding);
@@ -2575,6 +2577,29 @@ internal static class Program
         Check(!check(3750, false) && !check(4000, true), "able to reach a bed or food, or asleep, drafted, or downed, starts it over");
         Check(!check(9000, true) && Field<int>(timer, "Since") == 9000, "a gap longer than the checks during a run starts it over");
         Check(!check(8000, true) && Field<int>(timer, "Since") == 8000, "time going back starts it over");
+    }
+
+    private static void CheckFireEpisode()
+    {
+        object watch = New("FireWatch");
+        MethodInfo note = watch.GetType().GetMethod("Note");
+        Func<int, int, int> level = (tick, cells) => (int)note.Invoke(watch, new object[] { tick, cells });
+        int[] fighting = new[] { level(100, 1), level(110, 12), level(120, 8), level(130, 11), level(140, 0), level(150, 1) };
+        Check(fighting.SequenceEqual(new[] { 1, 2, 2, 2, 2, 2 }), "a fire shrinking and growing again, or flickering out, keeps the highest size reached: " + string.Join(",", fighting));
+        Check(level(160, 60) == 3, "the same fire reaching the next size is a step up");
+        Check(level(200, 0) == 3 && level(1199, 0) == 3, "a fire just out is still the same episode");
+        Check(level(1200, 0) == 0 && level(1300, 1) == 1, "once it has been out a while, a new fire starts a new episode");
+    }
+
+    private static void CheckStuckTargets()
+    {
+        MethodInfo nearest = mod.GetType("RiMCP.Command.StuckTimer", true).GetMethod("Nearest").MakeGenericMethod(typeof(int));
+        Func<int, object> place = target => target >= 100 ? null : (object)(target / 10);
+        Func<int, float> distance = target => target % 100;
+        var picked = (List<int>)nearest.Invoke(null, new object[] { new[] { 15, 11, 23, 37, 21, 105, 104 }, place, distance, 10 });
+        Check(picked.SequenceEqual(new[] { 104, 105, 11, 21, 37 }), "one target per place, nearest first, and targets with no place each tried: " + string.Join(",", picked));
+        var capped = (List<int>)nearest.Invoke(null, new object[] { Enumerable.Range(0, 50).Select(i => i * 10).ToArray(), place, distance, 24 });
+        Check(capped.Count == 24, "at most the cap: " + capped.Count);
     }
 
     private static void CheckStopConditions()

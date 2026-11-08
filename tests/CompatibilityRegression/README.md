@@ -27,7 +27,7 @@ $env:NUGET_PACKAGES = Join-Path $PWD '.nuget/packages'
 dotnet restore tests/CompatibilityRegression/CompatibilityRegression.csproj --source $env:NUGET_PACKAGES "-p:RimWorldManagedPath=$managed"
 ```
 
-The ninety-two checks cover:
+The ninety-four checks cover:
 
 - Main-menu research listing, definition lookup, and definition search, including
   absence of invented `finished`/`progress` values and blockers, and `availableOnly`
@@ -93,9 +93,12 @@ The ninety-two checks cover:
   on a colonist who starts starving or whose malnutrition reaches a worse stage, and on
   one who becomes stuck, but not on what was so at the start; recording a condition that
   is not a stop; a colonist stuck only after an in-game hour trapped, starting over when
-  freed or after a gap between checks or time going back; and every condition but
-  `letter` stopping by default, with the schema offering exactly the run's conditions.
-  Finding fires, hunger, and reachability in a live map is a live-game test.
+  freed or after a gap between checks or time going back; a fire episode keeping the
+  highest size reached while the fire shrinks, grows, or flickers out, and ending only
+  after a while without fire; a stuck check trying one target per place, nearest first,
+  up to a cap; and every condition but `letter` stopping by default, with the schema
+  offering exactly the run's conditions. Finding fires, hunger, and reachability in a
+  live map is a live-game test.
 - Waiting stays bound to one run: `get_advance` answers for the requested run id,
   and a waiting request returns when that run ends, through the real bridge
   dispatch with the test thread acting as the main thread.
