@@ -198,10 +198,16 @@ namespace RiMCP.Read
         private static List<object> BuildRisks(Map map, List<Pawn> core, List<Pawn> hostiles, FoodSummary food)
         {
             List<object> risks = new List<object>();
-            int bleeding = core.Count(pawn => Bleeding.Of(pawn) != null);
+            // Only those blood loss would kill within a day, when the Health tab gives a time; slower
+            // bleeding, and pawns it cannot kill, stay in medical.bleedingPawns.
+            int bleeding = core.Count(pawn =>
+            {
+                Bleeding now = Bleeding.Of(pawn);
+                return now != null && now.HoursUntilDeath != null && now.HoursUntilDeath.Value < Bleeding.ShownHours;
+            });
             if (bleeding > 0)
             {
-                risks.Add(Risk("medical", "bleedingCorePawns", "Core pawns are bleeding; medical.bleedingPawns gives the hours until blood loss kills each, most urgent first.", bleeding, "list_pawns?filter=core"));
+                risks.Add(Risk("medical", "bleedingCorePawns", "Core pawns will die of blood loss within a day unless tended; medical.bleedingPawns gives the hours left, most urgent first.", bleeding, "list_pawns?filter=core"));
             }
             int downed = core.Count(pawn => pawn.Downed);
             if (downed > 0)

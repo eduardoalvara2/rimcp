@@ -15,6 +15,8 @@ namespace RiMCP.Read
     internal sealed class Bleeding
     {
         public const float ShownRate = 0.01f;
+        // Hours left under which the tab gives a time to death, rather than Won't bleed out soon.
+        public const float ShownHours = 24f;
 
         public float RatePerDay;
         // Null when blood loss cannot kill the pawn.

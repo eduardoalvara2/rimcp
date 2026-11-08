@@ -203,7 +203,7 @@ internal static class Program
         Test("a stuck check tries one target per place, nearest first, up to a cap", CheckStuckTargets);
         Test("fire, starving, stuck, and bleedingCritical stop by default, and the schema offers exactly the run's conditions", CheckStopConditions);
         Test("bleeding reads as the Health tab shows it: rate per day, hours until blood loss kills, most urgent first", CheckBleedingReads);
-        Test("advance stops when a colonist's bleeding turns critical, once per bleeding, and again only after it stops", CheckBleedingStops);
+        Test("advance stops when a colonist's bleeding turns critical, even between short runs, once per bleeding, and again only after it stops", CheckBleedingStops);
         Test("advance retries are recognised across recent runs and need matching arguments", CheckAdvanceReceipts);
         Test("get_advance answers for the requested run, and a deferred reply stays bound to it", CheckAdvanceWaitBinding);
         Test("a waiting request returns when its run ends, with that run's result", CheckDeferredDispatch);
@@ -2656,10 +2656,9 @@ internal static class Program
         object game = new object();
         object atStart = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, new[] { Bleeder("A", true), Bleeder("B", false) }, new object[0]), null);
         Step(atStart, Observation(game, 110, TimeSpeed.Superfast, null, new[] { Bleeder("A", true), Bleeder("B", false) }, new object[0]));
-        Check(Field<string>(atStart, "Status") == "running", "a colonist already critical at the start does not stop the run");
-        Step(atStart, Observation(game, 120, TimeSpeed.Superfast, null, new[] { Bleeder("A", true), Bleeder("B", true) }, new object[0]));
         object stoppedBy = Field<object>(atStart, "StoppedBy");
-        Check(Field<string>(atStart, "Status") == "stopped" && Field<string>(stoppedBy, "Kind") == "bleedingCritical" && Field<string>(stoppedBy, "PawnId") == "B" && Field<string>(stoppedBy, "Detail").StartsWith("5.9 in-game hours"), "bleeding turning critical stops the run by default, naming the colonist and the hours");
+        Check(Field<string>(atStart, "Status") == "stopped" && Field<string>(stoppedBy, "Kind") == "bleedingCritical" && Field<string>(stoppedBy, "PawnId") == "A" && Field<string>(stoppedBy, "Detail").StartsWith("5.9 in-game hours"),
+            "a critical bleeding not reported yet stops the run on its first frame, even when it was critical at the start, naming the colonist and the hours");
 
         object both = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, new[] { Colonist("C") }, new object[0]), null);
         object downedAndCritical = Bleeder("C", true);
@@ -2667,14 +2666,36 @@ internal static class Program
         Step(both, Observation(game, 110, TimeSpeed.Superfast, null, new[] { downedAndCritical }, new object[0]));
         Check(Field<string>(Field<object>(both, "StoppedBy"), "Kind") == "bleedingCritical" && Events(both).SequenceEqual(new[] { "bleedingCritical", "downed", "injured" }), "bleeding to death is the cause over going down in the same frame: " + string.Join(", ", Events(both)));
 
+        // What the runner does each frame: each colonist's bleeding through the watch, and the
+        // frame's events back into it.
         object watch = New("BleedingWatch");
-        MethodInfo note = watch.GetType().GetMethod("Note");
-        Func<float?, bool> check = hours => (bool)note.Invoke(watch, new object[] { "A", hours, hours == null ? null : "at " + hours.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) });
-        Check(!check(9f) && !check(6f), "six or more hours left is not critical");
-        Check(check(5.9f) && (string)watch.GetType().GetMethod("Critical").Invoke(watch, new object[] { "A" }) == "at 5.9", "under six hours is critical, with the detail from then");
-        Check(check(8f) && check(4f), "tending some wounds does not end the bleeding's critical stop; it fires once per bleeding");
-        Check(!check(null) && !check(7f) && check(5f), "once the colonist stops bleeding it re-arms for the next bleeding");
-        Check(!(bool)note.Invoke(watch, new object[] { "D", null, null }) && (bool)note.Invoke(watch, new object[] { "E", 1f, "at 1" }) && check(5f), "a colonist blood loss cannot kill is never critical, and each colonist is watched on their own");
+        MethodInfo pending = watch.GetType().GetMethod("Pending");
+        MethodInfo reported = watch.GetType().GetMethod("Reported");
+        Func<float?, object[]> colonists = hours => new[] { Bleeder("A", (bool)pending.Invoke(watch, new object[] { "A", hours })) };
+        Action<object, int, float?> frame = (run, tick, hours) => reported.Invoke(watch, new[] { run.GetType().GetMethod("Step").Invoke(run, new[] { Observation(game, tick, TimeSpeed.Superfast, null, colonists(hours), new object[0]) }) });
+
+        // A fight: each short run ends before a 250-tick check would come round, and the bleeding
+        // turns critical between runs.
+        object fight = AdvanceRun(game, Observation(game, 100, TimeSpeed.Superfast, null, colonists(8f), new object[0]), null);
+        frame(fight, 110, 7.9f);
+        Check(Field<string>(fight, "Status") == "running", "eight hours left is not critical");
+        object next = AdvanceRun(game, Observation(game, 300, TimeSpeed.Superfast, null, colonists(5.5f), new object[0]), null);
+        frame(next, 301, 5.5f);
+        Check(Field<string>(next, "Status") == "stopped" && Field<string>(Field<object>(next, "StoppedBy"), "Kind") == "bleedingCritical", "a bleeding that turned critical between runs stops the next run at once, not never");
+        object after = AdvanceRun(game, Observation(game, 400, TimeSpeed.Superfast, null, colonists(5.4f), new object[0]), null);
+        frame(after, 410, 7f);
+        frame(after, 420, 4f);
+        Check(Field<string>(after, "Status") == "running", "once reported, the same bleeding does not stop a run again, even when tending some wounds buys time and it turns critical again");
+        frame(after, 430, null);
+        frame(after, 440, 5f);
+        Check(Field<string>(after, "Status") == "stopped" && Field<string>(Field<object>(after, "StoppedBy"), "Kind") == "bleedingCritical", "once they stop bleeding, bleeding again stops a run again");
+
+        object unwatched = AdvanceRun(game, Observation(game, 500, TimeSpeed.Superfast, null, colonists(null), new object[0]), new string[0]);
+        frame(unwatched, 510, 3f);
+        frame(unwatched, 520, 2f);
+        Check(Field<string>(unwatched, "Status") == "running" && Events(unwatched).SequenceEqual(new[] { "bleedingCritical" }), "a bleeding is recorded once even when it is not a stop: " + string.Join(", ", Events(unwatched)));
+        Check(!(bool)pending.Invoke(watch, new object[] { "D", null }) && !(bool)pending.Invoke(watch, new object[] { "E", 6f }) && (bool)pending.Invoke(watch, new object[] { "F", 5.99f }),
+            "under six hours is critical, six or more is not, and a colonist blood loss cannot kill never is");
     }
 
     private static T Blank<T>()

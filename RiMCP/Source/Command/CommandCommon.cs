@@ -102,12 +102,20 @@ namespace RiMCP.Command
             return requestId;
         }
 
+        // A pawn another pawn carries is on the map but not on the ground, so it is a 409 naming the
+        // carrier rather than not found.
+        public static CommandException PawnNotFound(Map map, string pawnId)
+        {
+            string carried = PawnReadService.CarriedMessage(map, pawnId);
+            return carried == null ? new CommandException(404, "Pawn not found.") : new CommandException(409, carried);
+        }
+
         public static Pawn ResolveSpawnedPawn(CommandContext context, string pawnId)
         {
             Pawn pawn = PawnReadService.FindPawn(context.Map, pawnId);
             if (pawn == null)
             {
-                throw new CommandException(404, "Pawn not found.");
+                throw PawnNotFound(context.Map, pawnId);
             }
             if (pawn.Dead || !pawn.Spawned)
             {

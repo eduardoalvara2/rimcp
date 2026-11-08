@@ -55,7 +55,7 @@ namespace RiMCP.Command
                 ?? PawnReadService.FindPawn(context.Map, pawnId);
             if (pawn == null)
             {
-                throw new CommandException(404, "Pawn not found.");
+                throw CommandUtil.PawnNotFound(context.Map, pawnId);
             }
             string name = ReadUtil.PawnName(pawn);
             List<Pawn> before = owners.AssignedPawnsForReading.ToList();

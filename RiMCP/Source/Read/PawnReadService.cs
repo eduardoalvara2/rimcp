@@ -99,7 +99,16 @@ namespace RiMCP.Read
             {
                 yield return pawn;
             }
-            foreach (Pawn carrier in spawned)
+            foreach (Pawn carried in CarriedPawns(spawned))
+            {
+                yield return carried;
+            }
+        }
+
+        // The living pawns these pawns carry.
+        public static IEnumerable<Pawn> CarriedPawns(IEnumerable<Pawn> carriers)
+        {
+            foreach (Pawn carrier in carriers)
             {
                 Pawn carried = carrier.carryTracker == null ? null : carrier.carryTracker.CarriedThing as Pawn;
                 if (carried != null && !carried.Dead)
@@ -107,6 +116,19 @@ namespace RiMCP.Read
                     yield return carried;
                 }
             }
+        }
+
+        // Why a command cannot act on a pawn it did not find on the ground: carried, a 409 naming
+        // the carrier, or else not found.
+        public static string CarriedMessage(Map map, string id)
+        {
+            if (map == null || string.IsNullOrWhiteSpace(id))
+            {
+                return null;
+            }
+            Pawn carried = CarriedPawns(map.mapPawns.AllPawnsSpawned.ToList()).FirstOrDefault(p => IsPawn(p, id) && Visible(map, p));
+            Pawn carrier = carried == null ? null : carried.CarriedBy;
+            return carrier == null ? null : Named(carried) + " is being carried by " + ReadUtil.PawnName(carrier) + " (" + carrier.ThingID + ", " + RoleForPawn(map, carrier) + "); orders reach a pawn once it is set down.";
         }
 
         // Where a pawn not on this map is, when the player could know: dead with the corpse here, on

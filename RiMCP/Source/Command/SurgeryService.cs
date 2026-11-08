@@ -132,7 +132,7 @@ namespace RiMCP.Command
             Pawn pawn = PawnReadService.FindPawn(map, pawnId);
             if (pawn == null)
             {
-                throw new CommandException(404, "Pawn not found.");
+                throw CommandUtil.PawnNotFound(map, pawnId);
             }
             string name = ReadUtil.PawnName(pawn);
             if (pawn.Dead)
