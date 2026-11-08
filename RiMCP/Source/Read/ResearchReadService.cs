@@ -114,6 +114,26 @@ namespace RiMCP.Read
                 dto["requiredResearchFacilities"] = project.requiredResearchFacilities == null
                     ? new object[0]
                     : project.requiredResearchFacilities.Select(facility => facility.defName).OrderBy(name => name).ToArray();
+                // The rest of what the game checks before a project can start, as the def sets it;
+                // each applies only with its expansion active (techprints Royalty, mechanitor
+                // Biotech, studied things Anomaly, grav engine Odyssey).
+                dto["requiresMechanitor"] = project.requiresMechanitor;
+                if (project.hiddenPrerequisites != null && project.hiddenPrerequisites.Count > 0)
+                {
+                    dto["hiddenPrerequisites"] = project.hiddenPrerequisites.Select(prereq => prereq.defName).OrderBy(name => name).ToArray();
+                }
+                if (project.techprintCount > 0)
+                {
+                    dto["techprintCount"] = project.techprintCount;
+                }
+                if (project.requiredAnalyzed != null && project.requiredAnalyzed.Count > 0)
+                {
+                    dto["requiredStudied"] = project.requiredAnalyzed.Select(thing => thing.defName).OrderBy(name => name).ToArray();
+                }
+                if (project.requireGravEngineInspected)
+                {
+                    dto["requiresGravEngineInspected"] = true;
+                }
             }
             return dto;
         }

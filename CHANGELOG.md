@@ -9,6 +9,11 @@ A fork of RimMCP 1.1.0 at `eduardoalvara2/rimcp`, branch `rimplayer`, for the ri
 ### Added
 
 - `list_dialogs` lists the game's question to name the faction and settlement (`Dialog_NamePlayerFactionAndSettlement`, or `Dialog_NamePlayerFaction` or `Dialog_NamePlayerSettlement` when it asks for one name) as a naming dialog: kind `naming`, option `ok`, and `names`, with each field it asks `answer_dialog` for (`factionName`, `settlementName`), the text in its box (the game's suggestion), the longest name its own check takes (40 characters for a faction name, which also has to be a valid file name, and 64 for a settlement's), and the settlement's name now. `answer_dialog` answers it with those names: checked with the dialog's own rules before anything is typed, a refused name says which part of the check it failed and gives the game's message, and the names are then applied as its OK button does, with the dialog's own naming code, message and close, so the game does not ask again. In commitment mode the game renames the save then, as it does for the player. `dismiss_dialog` is unchanged, and the gravship's naming dialog (Odyssey) stays the player's.
+- `get_def` for a research project shows the rest of what the game checks before it can start: `requiresMechanitor`, and where the def sets them `hiddenPrerequisites`, `techprintCount`, `requiredStudied` and `requiresGravEngineInspected`; with a colony loaded, `canStartNow` and the `startRequirements` not met, each with a kind and a message.
+
+### Changed
+
+- `set_research_project` refuses a project that cannot start naming each requirement not met (`prerequisitesUnfinished`, `techprintsMissing`, `missingResearchBench`, `noMechanitor`, `notStudied`, `undiscovered`, `gravEngineNotInspected`), instead of only saying it cannot be started now.
 
 ## 1.1.0+rimplayer.1 (rimplayer fork) - 2026-11-08
 

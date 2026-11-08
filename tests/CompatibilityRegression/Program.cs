@@ -234,6 +234,7 @@ internal static class Program
         Test("the faction and settlement naming dialogs list their names and check them with their own rules", CheckNamingDialogs);
         Test("a naming dialog's OK applies the trimmed names with the dialog's own code", CheckNamingApply);
         Test("answer_dialog types a naming dialog's names, refusing missing or refused ones before anything runs", CheckNamingAnswers);
+        Test("research defs show what they need to start, and a refusal names the unmet requirement", CheckResearchRequirements);
         Test("presets choose groups, and settings saved before presets migrate", CheckAccessPresets);
         Test("operations run one at a time, a step per frame, and stop at a safe step when cancelled or revoked", CheckOperationRunner);
         Test("operation retries return the original operation or an expired answer, for the last 1,000 requests", CheckOperationRetries);
@@ -2449,6 +2450,59 @@ internal static class Program
         finally
         {
             runner.GetMethod("Reset", Static).Invoke(null, null);
+        }
+    }
+
+    // get_def gives what a research project needs to start from its def, and with a colony which
+    // requirements are unmet; set_research_project names them. The game's checks read the active
+    // expansions, which this harness does not load, so each check is replaced.
+    private static void CheckResearchRequirements()
+    {
+        var probe = new ResearchProjectDef { defName = "MechtechProbe", label = "mechtech probe", baseCost = 100f, description = "Needs a mechanitor", requiresMechanitor = true };
+        DefDatabase<ResearchProjectDef>.Add(probe);
+        var research = (Dictionary<string, object>)Data(Call("DefReadService", "GetDef", "/v1/defs/MechtechProbe?kind=research", "defName", "MechtechProbe"))["research"];
+        Check((bool)research["requiresMechanitor"] && !research.ContainsKey("canStartNow") && !research.ContainsKey("startRequirements"), "the def says it needs a mechanitor, and without a colony nothing is unmet: " + Json.Serialize(research));
+        var alphaRow = (Dictionary<string, object>)Data(Call("DefReadService", "GetDef", "/v1/defs/RegressionAlpha?kind=research", "defName", "RegressionAlpha"))["research"];
+        Check(!(bool)alphaRow["requiresMechanitor"], "other research needs no mechanitor");
+
+        Type requirementType = mod.GetType("RiMCP.Read.ResearchRequirement", true);
+        Array all = (Array)mod.GetType("RiMCP.Read.ResearchRequirements", true).GetField("All", Static).GetValue(null);
+        FieldInfo met = requirementType.GetField("Met");
+        string[] kinds = all.Cast<object>().Select(each => Field<string>(each, "Kind")).ToArray();
+        Check(kinds.SequenceEqual(new[] { "prerequisitesUnfinished", "techprintsMissing", "missingResearchBench", "noMechanitor", "notStudied", "undiscovered", "gravEngineNotInspected" }), "every check CanStartNow makes, in its order: " + string.Join(", ", kinds));
+        object[] saved = all.Cast<object>().Select(each => met.GetValue(each)).ToArray();
+        ResearchProjectDef alpha = DefDatabase<ResearchProjectDef>.GetNamed("RegressionAlpha");
+        Game game = (Game)FormatterServices.GetUninitializedObject(typeof(Game));
+        game.researchManager = new ResearchManager();
+        Current.Game = game;
+        try
+        {
+            foreach (object requirement in all)
+            {
+                met.SetValue(requirement, Field<string>(requirement, "Kind") == "noMechanitor" ? (Func<ResearchProjectDef, bool>)(project => !project.requiresMechanitor) : project => true);
+            }
+            IList unmet = (IList)Invoke("RiMCP.Read.ResearchRequirements", "Unmet", probe);
+            Check(unmet.Count == 1 && (string)((Dictionary<string, object>)unmet[0])["kind"] == "noMechanitor", "the unmet requirement is the mechanitor");
+            Check(((IList)Invoke("RiMCP.Read.ResearchRequirements", "Unmet", alpha)).Count == 0, "research with every requirement met has none unmet");
+            string message = null;
+            try
+            {
+                Invoke("RiMCP.Command.ResearchCommandService", "SetCurrent", Request("/v1/research/current", "PUT", "{\"projectDefName\":\"MechtechProbe\"}"), Route());
+            }
+            catch (Exception e)
+            {
+                Check(e.GetType().FullName == "RiMCP.Command.CommandException" && (int)e.GetType().GetField("StatusCode").GetValue(e) == 409, "the refusal is a 409: " + e);
+                message = e.Message;
+            }
+            Check(message != null && message.Contains("mechanitor") && message.StartsWith("Mechtech probe"), "set_research_project names the unmet requirement: " + message);
+            var row = (Dictionary<string, object>)((Dictionary<string, object>)Invoke("RiMCP.Read.DefReadService", "SerializeDef", probe, Detail("Full")))["research"];
+            object[] requirements = (object[])row["startRequirements"];
+            Check(!(bool)row["canStartNow"] && requirements.Length == 1 && (string)((Dictionary<string, object>)requirements[0])["kind"] == "noMechanitor", "get_def lists what keeps it from starting with a colony");
+        }
+        finally
+        {
+            for (int i = 0; i < saved.Length; i++) met.SetValue(all.GetValue(i), saved[i]);
+            Current.Game = null;
         }
     }
 

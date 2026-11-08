@@ -27,7 +27,7 @@ $env:NUGET_PACKAGES = Join-Path $PWD '.nuget/packages'
 dotnet restore tests/CompatibilityRegression/CompatibilityRegression.csproj --source $env:NUGET_PACKAGES "-p:RimWorldManagedPath=$managed"
 ```
 
-The eighty-seven checks cover:
+The eighty-eight checks cover:
 
 - Main-menu research listing, definition lookup, and definition search, including
   absence of invented `finished`/`progress` values and blockers, and `availableOnly`
@@ -129,6 +129,10 @@ The eighty-seven checks cover:
   names in its body, refusing a missing name, a refused one, names with cancel, and names
   for a dialog that asks for none before anything is typed or pressed. Naming a real
   faction, its message, and closing the window are live-game tests.
+- Research defs giving `requiresMechanitor` without a colony, the start requirements in
+  `CanStartNow`'s order, and with a colony the unmet ones in `get_def` and named in
+  `set_research_project`'s 409. The game's checks read the active expansions, which the
+  harness does not load, so each is replaced with a stand-in.
 - Cell rectangles bounded, clipped to the map and de-duplicated; rejected cells
   all counted but listed up to a cap; and request ids: a retry returns the first
   result whatever its outcome (alreadySatisfied and rejected too) without the command

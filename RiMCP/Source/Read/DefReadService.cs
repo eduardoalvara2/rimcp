@@ -350,7 +350,16 @@ namespace RiMCP.Read
             ResearchProjectDef research = def as ResearchProjectDef;
             if (research != null)
             {
-                dto["research"] = ResearchReadService.SerializeProject(research, detail);
+                Dictionary<string, object> project = (Dictionary<string, object>)ResearchReadService.SerializeProject(research, detail);
+                // With a colony, whether it can start now and what keeps it from starting.
+                if (detail != ReadDetail.Summary && Current.Game != null && Find.ResearchManager != null)
+                {
+                    bool finished = research.IsFinished;
+                    List<object> unmet = finished ? new List<object>() : ResearchRequirements.Unmet(research);
+                    project["canStartNow"] = !finished && unmet.Count == 0 && research.CanStartNow;
+                    project["startRequirements"] = unmet.ToArray();
+                }
+                dto["research"] = project;
             }
             WorkTypeDef workType = def as WorkTypeDef;
             if (workType != null)

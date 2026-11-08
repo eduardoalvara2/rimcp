@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Runtime.Serialization;
 using RimWorld;
 using RiMCP.Bridge;
@@ -29,9 +30,15 @@ namespace RiMCP.Command
             {
                 throw new CommandException(409, "Research project is already finished.");
             }
+            // Named by the requirement the game's own check finds unmet, such as a mechanitor.
+            List<object> unmet = ResearchRequirements.Unmet(project);
+            if (unmet.Count > 0)
+            {
+                throw new CommandException(409, ResearchRequirements.Refusal(project, unmet));
+            }
             if (!project.CanStartNow)
             {
-                throw new CommandException(409, "Research project cannot be started now.");
+                throw new CommandException(409, ReadUtil.DefLabel(project) + " cannot be started now, for a reason RimMCP does not know, such as a mod's own requirement.");
             }
 
             // Anomaly knowledge projects occupy one slot per knowledge category, alongside the
