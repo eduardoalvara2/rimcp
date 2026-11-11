@@ -227,7 +227,7 @@ internal static class Program
         {
             IEnumerable tools = (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null);
             Dictionary<string, int> counts = tools.Cast<object>().GroupBy(tool => Field<string>(tool, "Group") ?? "(none)").ToDictionary(group => group.Key, group => group.Count());
-            var expected = new Dictionary<string, int> { { "observe", 43 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 5 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
+            var expected = new Dictionary<string, int> { { "observe", 44 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 5 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
             int count;
             Check(counts.Count == expected.Count && expected.All(pair => counts.TryGetValue(pair.Key, out count) && count == pair.Value),
                 "group sizes: " + string.Join(", ", counts.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
@@ -347,6 +347,8 @@ internal static class Program
         });
         Test("place_blueprint takes floors and floor rectangles, and remove_floor is an Orders tool, with every check that needs no game", CheckFloorTools);
         Test("a floor rectangle counts each cell once, groups refusals by reason, and takes its corners in either order", CheckCellSweep);
+        Test("list_rooms is an Observe read with exactly the sections it knows, a summary by default, and room ids built from the anchor cell", CheckRoomTool);
+        Test("room measures: bounding box and runs, dark cells under 0.3 glow, what is two cells out from the walls, and floor against natural ground", CheckRoomMeasures);
         Test("food trends need six hours of samples and use the last three days", CheckFoodTrend);
         Test("bill states follow ShouldDoNow without changing the bill", CheckBillStates);
         Test("storage edits keep special filters and report any change to the accepted items", CheckStorageEdits);
@@ -3373,6 +3375,99 @@ internal static class Program
         rect = (CellRect)Invoke("RiMCP.Command.CellSweep", "Between", 0, 0, 59, 59, "placements[0]");
         Check(rect.Area == 3600, "60 by 60 cells is allowed");
         ExpectCommandError(400, () => Invoke("RiMCP.Command.CellSweep", "Between", 0, 0, 60, 0, "placements[0]"));
+    }
+
+    private static void CheckRoomTool()
+    {
+        IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
+        object spec = Tool("list_rooms");
+        Check(Field<string>(spec, "HandlerId") == "rooms" && Field<string>(spec, "Group") == "observe" && Field<string>(spec, "Method") == "GET" && Field<string>(spec, "PathTemplate") == "/v1/rooms", "list_rooms is an Observe read at GET /v1/rooms");
+        Delegate handler = handlers["rooms"] as Delegate;
+        Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == "RoomReadService.ListRooms", "list_rooms must be handled by RoomReadService.ListRooms");
+        Check(new[] { "roles", "rooms", "include", "detail", "limit", "cursor", "mapId" }.All(Field<string[]>(spec, "QueryKeys").Contains), "list_rooms reads its filters, sections and paging from the query");
+        Check((bool)Field<Dictionary<string, object>>(spec, "Annotations")["readOnlyHint"], "list_rooms changes nothing");
+
+        // The sections the tool offers are the sections it knows.
+        string[] known = (string[])mod.GetType("RiMCP.Read.RoomReadService", true).GetField("SectionNames", Static).GetValue(null);
+        var include = (Dictionary<string, object>)ToolProperties(spec)["include"];
+        string[] offered = (string[])((Dictionary<string, object>)include["items"])["enum"];
+        Check(offered.SequenceEqual(known), "list_rooms offers " + string.Join(", ", offered) + " but knows " + string.Join(", ", known));
+        Check(Field<string>(spec, "Description").Contains("0.3") && Field<string>(spec, "Description").Contains("RoomTempTracker"), "list_rooms documents the light threshold and the wall rule");
+
+        Func<string, object> sections = path => Invoke("RiMCP.Read.RoomReadService", "ReadSections", Invoke("RiMCP.Read.ReadRequest", "FromUri", new Uri("http://127.0.0.1" + path)));
+        Func<object, string> flags = value => string.Join(",", new[] { "Doors", "Walls", "Light", "Floor", "Contents", "Cells" }.Where(name => (bool)value.GetType().GetField(name).GetValue(value)).ToArray());
+        Check(flags(sections("/v1/rooms")) == "", "the default answer is the summary: no section is asked for");
+        Check(flags(sections("/v1/rooms?detail=normal")) == "Doors,Walls,Light,Floor,Contents", "detail normal gives every section but the cells");
+        Check(flags(sections("/v1/rooms?detail=full")) == "Doors,Walls,Light,Floor,Contents,Cells", "detail full gives the cells too");
+        Check(flags(sections("/v1/rooms?include=cells,doors")) == "Doors,Cells", "include asks for single sections, the cells included");
+        Check(flags(sections("/v1/rooms?include=Light")) == "Light", "section names are not case-sensitive");
+        ExpectBridgeError(400, () => sections("/v1/rooms?include=beds"));
+        ExpectBridgeError(409, () => Invoke("RiMCP.Read.RoomReadService", "ListRooms", Request("/v1/rooms"), Route()));
+
+        // Room ids are built from the lowest, westmost cell of the room, on its map.
+        Map map = (Map)FormatterServices.GetUninitializedObject(typeof(Map));
+        map.uniqueID = 3;
+        object index = Activator.CreateInstance(mod.GetType("RiMCP.Read.RoomIndex", true), new object[] { map });
+        Room room = (Room)FormatterServices.GetUninitializedObject(typeof(Room));
+        Check((string)index.GetType().GetMethod("Register").Invoke(index, new object[] { room, new IntVec3(12, 0, 7) }) == "room:3:12,7", "a room is named by its map and anchor cell");
+    }
+
+    private static void CheckRoomMeasures()
+    {
+        Type measures = mod.GetType("RiMCP.Read.RoomMeasures", true);
+        var cells = new[] { new IntVec3(7, 0, 3), new IntVec3(3, 0, 3), new IntVec3(2, 0, 4), new IntVec3(4, 0, 3), new IntVec3(2, 0, 3), new IntVec3(3, 0, 4) }.ToList();
+        var bounds = (Dictionary<string, object>)measures.GetMethod("Bounds").Invoke(null, new object[] { cells });
+        Check((int)bounds["x1"] == 2 && (int)bounds["z1"] == 3 && (int)bounds["x2"] == 7 && (int)bounds["z2"] == 4, "the bounding box spans every cell");
+        Check(measures.GetMethod("Bounds").Invoke(null, new object[] { new List<IntVec3>() }) == null, "no cells have no box");
+        IntVec3 anchor = (IntVec3)measures.GetMethod("Anchor").Invoke(null, new object[] { cells });
+        Check(anchor.x == 2 && anchor.z == 3, "the anchor is the westmost cell of the lowest row: " + anchor);
+        var rows = ((object[])measures.GetMethod("Runs").Invoke(null, new object[] { cells })).Cast<Dictionary<string, object>>().ToList();
+        Check(rows.Count == 2 && (int)rows[0]["z"] == 3 && (int)rows[1]["z"] == 4, "rows run from the south");
+        var runs = ((object[])rows[0]["runs"]).Cast<int[]>().ToList();
+        Check(runs.Count == 2 && runs[0].SequenceEqual(new[] { 2, 4 }) && runs[1].SequenceEqual(new[] { 7, 7 }), "consecutive cells make one run: " + string.Join(";", runs.Select(run => run[0] + "-" + run[1]).ToArray()));
+        Check(((object[])rows[1]["runs"]).Cast<int[]>().Single().SequenceEqual(new[] { 2, 3 }), "the next row has its own run");
+
+        // Light: dark is less than 0.3, with the sky as it is and with the lamps alone.
+        Type lightType = measures.GetNestedType("Light");
+        object light = Activator.CreateInstance(lightType);
+        MethodInfo add = lightType.GetMethod("Add");
+        add.Invoke(light, new object[] { 0.1f, 0.1f });
+        add.Invoke(light, new object[] { 0.9f, 0.2f });
+        add.Invoke(light, new object[] { 0.3f, 0.3f });
+        var lit = (Dictionary<string, object>)lightType.GetMethod("ToDto").Invoke(light, null);
+        Check((int)lit["darkCells"] == 1 && (int)lit["litCells"] == 2 && (int)lit["darkCellsWithoutSky"] == 2, "a cell with exactly 0.3 glow is not dark, and night counts the lamps alone");
+        Check(Math.Abs(Convert.ToDouble(lit["minGlow"]) - 0.1) < 0.001 && Math.Abs(Convert.ToDouble(lit["minGlowWithoutSky"]) - 0.1) < 0.001, "the dimmest cell is reported");
+        Check(!((Dictionary<string, object>)lightType.GetMethod("ToDto").Invoke(Activator.CreateInstance(lightType), null)).ContainsKey("minGlow"), "no cells have no dimmest glow");
+
+        // Walls: what the cells two steps out from the edge of the room are.
+        Type exposure = measures.GetNestedType("Exposure");
+        Type listType = typeof(List<>).MakeGenericType(exposure);
+        IList exposures = (IList)Activator.CreateInstance(listType);
+        foreach (string name in new[] { "Outdoors", "Outdoors", "Solid", "Solid", "Solid", "OtherRoom", "Door" }) exposures.Add(Enum.Parse(exposure, name));
+        var walls = (Dictionary<string, object>)measures.GetMethod("Walls").Invoke(null, new object[] { exposures });
+        Check((int)walls["equalizeCells"] == 7 && (int)walls["thinToOutdoors"] == 2 && (int)walls["thinToRooms"] == 1 && (int)walls["thick"] == 3 && (int)walls["toDoors"] == 1 && Math.Abs(Convert.ToDouble(walls["thickShare"]) - 0.43) < 0.001, "walls are counted by what is two cells out");
+        Check(!((Dictionary<string, object>)measures.GetMethod("Walls").Invoke(null, new object[] { Activator.CreateInstance(listType) })).ContainsKey("thickShare"), "a room with no equalization cells has no thick share");
+
+        // Floor: natural ground against laid floors, and by terrain with what each does to the room.
+        Type floorCell = measures.GetNestedType("FloorCell");
+        Func<string, bool, float, float, object> cell = (name, constructed, beauty, cleanliness) =>
+        {
+            object value = Activator.CreateInstance(floorCell);
+            floorCell.GetField("DefName").SetValue(value, name);
+            floorCell.GetField("Label").SetValue(value, name.ToLowerInvariant());
+            floorCell.GetField("Constructed").SetValue(value, constructed);
+            floorCell.GetField("Beauty").SetValue(value, beauty);
+            floorCell.GetField("Cleanliness").SetValue(value, cleanliness);
+            return value;
+        };
+        IList floors = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(floorCell));
+        for (int i = 0; i < 3; i++) floors.Add(cell("Soil", false, -3f, -1f));
+        for (int i = 0; i < 5; i++) floors.Add(cell("WoodPlankFloor", true, 0f, 0f));
+        var floor = (Dictionary<string, object>)measures.GetMethod("Floor").Invoke(null, new object[] { floors, true });
+        var byTerrain = ((object[])floor["byTerrain"]).Cast<Dictionary<string, object>>().ToList();
+        Check((int)floor["constructedCells"] == 5 && (int)floor["naturalCells"] == 3 && (string)floor["dominant"] == "WoodPlankFloor", "floor cells are split into laid and natural");
+        Check(byTerrain.Count == 2 && (string)byTerrain[0]["defName"] == "WoodPlankFloor" && (int)byTerrain[0]["cells"] == 5 && Convert.ToDouble(byTerrain[1]["beauty"]) == -3 && Convert.ToDouble(byTerrain[1]["cleanliness"]) == -1, "terrains come most cells first with their beauty and cleanliness");
+        Check(!((Dictionary<string, object>)measures.GetMethod("Floor").Invoke(null, new object[] { floors, false })).ContainsKey("byTerrain"), "the terrain list comes only on request");
     }
 
     private static void CheckTradeTools()

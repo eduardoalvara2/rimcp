@@ -136,7 +136,7 @@ namespace RiMCP.Read
         // as a room; leaving them out keeps the list to real rooms, so a room that is not closed in
         // simply does not appear. A room still under fog, such as an unopened ancient shrine, is
         // left out too, as the player cannot see it.
-        private static IEnumerable<Room> Rooms(Map map)
+        internal static IEnumerable<Room> Rooms(Map map)
         {
             if (map == null || map.regionGrid == null)
             {

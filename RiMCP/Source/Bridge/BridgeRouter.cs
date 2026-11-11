@@ -50,6 +50,7 @@ namespace RiMCP.Bridge
             { "zones", ZoneReadService.ListZones },
             { "zone", ZoneReadService.GetZone },
             { "environment", EnvironmentReadService.GetEnvironment },
+            { "rooms", RoomReadService.ListRooms },
             { "power", PowerReadService.GetPower },
             { "threats", ThreatReadService.ListThreats },
             { "research", ResearchReadService.GetResearch },
