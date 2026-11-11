@@ -3339,6 +3339,24 @@ internal static class Program
         Check(!bare.BuildableByPlayer, "the seeded terrain is in no architect category");
         ExpectCommandError(400, () => Invoke("RiMCP.Command.BuildPlacement", "Resolve", "RegressionBareGround", null, null, "placements[0]."));
         ExpectCommandError(400, () => Invoke("RiMCP.Command.BuildPlacement", "Resolve", "NoSuchFloor", null, null, "placements[0]."));
+
+        // A floor template (Carpet) is not a floor: the refusal names the floors the game made from it.
+        TerrainTemplateDef template = (TerrainTemplateDef)FormatterServices.GetUninitializedObject(typeof(TerrainTemplateDef));
+        template.defName = "RegressionCarpet";
+        DefDatabase<TerrainTemplateDef>.Add(template);
+        TerrainDef red = (TerrainDef)FormatterServices.GetUninitializedObject(typeof(TerrainDef));
+        red.defName = "RegressionCarpetRed";
+        red.designationCategory = (DesignationCategoryDef)FormatterServices.GetUninitializedObject(typeof(DesignationCategoryDef));
+        DefDatabase<TerrainDef>.Add(red);
+        try
+        {
+            Invoke("RiMCP.Command.BuildPlacement", "Resolve", "RegressionCarpet", null, null, "placements[0].");
+            throw new Exception("a template must be refused");
+        }
+        catch (Exception e) when (e.GetType().Name == "CommandException")
+        {
+            Check(e.Message.Contains("RegressionCarpetRed") && e.Message.Contains("template"), "the refusal lists the generated floors: " + e.Message);
+        }
     }
 
     private static void CheckCellSweep()

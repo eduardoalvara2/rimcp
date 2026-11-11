@@ -418,6 +418,10 @@ namespace RiMCP.Command
             }
             if (!map.terrainGrid.CanRemoveTopLayerAt(cell))
             {
+                if (map.terrainGrid.FoundationAt(cell) != null)
+                {
+                    return "A foundation (a bridge or substructure) is not taken by Remove floor.";
+                }
                 return "No constructed floor to remove: natural ground cannot be removed.";
             }
             if (WorkGiver_ConstructRemoveFloor.AnyBuildingBlockingFloorRemoval(cell, map))

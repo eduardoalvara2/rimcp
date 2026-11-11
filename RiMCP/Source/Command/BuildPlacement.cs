@@ -51,6 +51,18 @@ namespace RiMCP.Command
                 throw new CommandException(400, "Missing required field '" + field + "def'.");
             }
             BuildableDef def = (BuildableDef)DefDatabase<ThingDef>.GetNamedSilentFail(defName.Trim()) ?? DefDatabase<TerrainDef>.GetNamedSilentFail(defName.Trim());
+            if (def == null)
+            {
+                // A template, such as Carpet, makes one floor for each colour.
+                TerrainTemplateDef template = DefDatabase<TerrainTemplateDef>.GetNamedSilentFail(defName.Trim());
+                if (template != null)
+                {
+                    string[] generated = DefDatabase<TerrainDef>.AllDefsListForReading
+                        .Where(terrain => terrain.BuildableByPlayer && terrain.defName.StartsWith(template.defName, StringComparison.Ordinal))
+                        .Select(terrain => terrain.defName).OrderBy(name => name, StringComparer.Ordinal).ToArray();
+                    throw new CommandException(400, "'" + defName + "' in " + field + "def is a floor template, not a floor: the game makes one floor for each colour. Use one of: " + string.Join(", ", generated) + ".");
+                }
+            }
             if (def == null || !def.BuildableByPlayer)
             {
                 throw new CommandException(400, "'" + defName + "' in " + field + "def is not a building or floor the player can build. Use a defName from search_defs (kind thing or terrain).");

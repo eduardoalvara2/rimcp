@@ -15,6 +15,12 @@ namespace RiMCP.Read
     {
         private const int MaxSpots = 40;
 
+        // The game scores a room (stats and role) only if it is a proper room of at most 60 regions.
+        private static bool Scored(Room room)
+        {
+            return room.ProperRoom && !room.IsHuge;
+        }
+
         // Sections of a room that can be asked for with include; detail normal and full give all
         // but the cells, which only include=cells or full give.
         public static readonly string[] SectionNames = { "doors", "walls", "light", "floor", "contents", "cells" };
@@ -25,6 +31,10 @@ namespace RiMCP.Read
             ReadRequest query = context.Request;
             Map map = context.Map;
             Sections wanted = ReadSections(query);
+            if (query.Get("limit") == null)
+            {
+                query.Limit = 20;
+            }
             List<RoomRoleDef> roles = query.DefList<RoomRoleDef>("roles");
             HashSet<string> ids = new HashSet<string>(query.List("rooms"), StringComparer.Ordinal);
 
@@ -88,10 +98,13 @@ namespace RiMCP.Read
             Dictionary<string, object> dto = Dto.Obj(
                 Dto.Field("id", view.Id),
                 Dto.Field("role", ReadUtil.Def(role)),
-                Dto.Field("properRoom", room.ProperRoom),
+                Dto.Field("scored", Scored(room)),
                 Dto.Field("bbox", RoomMeasures.Bounds(cells)),
                 Dto.Field("cellCount", cells.Count));
-            AddStats(dto, room);
+            if (Scored(room))
+            {
+                AddStats(dto, room);
+            }
             float temperature = room.Temperature;
             dto["temperatureC"] = Math.Round(temperature, 1);
             dto["comfortable"] = temperature >= ThingDefOf.Human.GetStatValueAbstract(StatDefOf.ComfyTemperatureMin) && temperature <= ThingDefOf.Human.GetStatValueAbstract(StatDefOf.ComfyTemperatureMax);
@@ -153,8 +166,7 @@ namespace RiMCP.Read
 
         // Every stat the game computes for the room, by its defName, with the label of the stage
         // the value falls in for the stats that have stages (impressiveness "decent", cleanliness
-        // "dirty"). A room too big to be a proper room, or open to the map edge, gets the game's
-        // roomless scores.
+        // "dirty"). Only rooms the game scores get them (see Scored); the others have no stats.
         private static void AddStats(Dictionary<string, object> dto, Room room)
         {
             Dictionary<string, object> stats = new Dictionary<string, object>();
@@ -285,6 +297,7 @@ namespace RiMCP.Read
         private static object[] ExposedSpots(Map map, Room room)
         {
             return room.TempTracker.EqualizeCellsForReading
+                .Distinct()
                 .Where(cell => ExposureOf(map, cell) == RoomMeasures.Exposure.Outdoors)
                 .OrderBy(cell => cell.z)
                 .ThenBy(cell => cell.x)

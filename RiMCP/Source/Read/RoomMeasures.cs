@@ -109,7 +109,8 @@ namespace RiMCP.Read
         // What the cell two steps out from a room's edge is, which is what the room's temperature
         // is pulled toward through the wall (RoomTempTracker): the air of another room or the
         // outdoors where the wall is one cell thick, nothing where it is two or more cells thick
-        // (the room then leans toward the outdoor temperature at half strength), or a door.
+        // (the room then leans toward the outdoor temperature at half strength; not in a vacuum
+        // biome, where every exchange is tiny), or a door.
         public enum Exposure
         {
             Outdoors,

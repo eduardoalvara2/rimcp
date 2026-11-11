@@ -261,7 +261,7 @@ namespace RiMCP.Read
 
         private static bool IsButcherTable(ThingDef def)
         {
-            return def.AllRecipes != null && def.AllRecipes.Any(recipe => recipe.defName.StartsWith("ButcherCorpse", StringComparison.Ordinal));
+            return def.AllRecipes != null && def.AllRecipes.Any(recipe => recipe.defName == "ButcherCorpseFlesh");
         }
 
         // The game's own test for a Kitchen: a production building with a recipe whose product a
