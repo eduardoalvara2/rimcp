@@ -31,6 +31,7 @@ namespace RiMCP.Bridge
             { "set-growing-zone", ZoneCommandService.SetGrowingZone },
             { "check-placement", BuildService.CheckPlacement },
             { "place-blueprint", BuildService.PlaceBlueprint },
+            { "remove-floor", BuildService.RemoveFloor },
             { "set-area", ZoneCommandService.SetArea },
             { "order-pawn", PawnOrderCommandService.OrderPawn },
             { "traders", TradeReadService.ListTraders },

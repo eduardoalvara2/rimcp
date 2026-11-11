@@ -7,21 +7,23 @@ using Verse;
 
 namespace RiMCP.Command
 {
-    // One building to place: its def, material and rotation, checked and placed with the game's
-    // build tool (Designator_Build). The tool applies the architect menu's rules (research, tech
-    // level, difficulty, prerequisite buildings) and GenConstruct.CanPlaceBlueprintAt for the spot,
-    // which never places into unexplored cells. A position is the building's position cell as the
-    // game defines it; footprintOffset gives the cells it covers from there.
+    // One building or floor to place: its def, material and rotation, checked and placed with the
+    // game's build tool (Designator_Build). The tool applies the architect menu's rules (research,
+    // tech level, difficulty, prerequisite buildings) and GenConstruct.CanPlaceBlueprintAt for the
+    // spot, which never places into unexplored cells. A position is the building's position cell
+    // as the game defines it; footprintOffset gives the cells it covers from there. A floor is a
+    // TerrainDef the architect menu offers: one cell, no material, no rotation, and the same tool
+    // and checks (the terrain's affordances, research, the cell already having it).
     internal sealed class BuildPlacement
     {
         private static readonly string[] RotationNames = { "north", "east", "south", "west" };
 
-        public readonly ThingDef Def;
+        public readonly BuildableDef Def;
         public readonly ThingDef Stuff;
         public readonly Rot4 Rotation;
         private readonly Tool tool;
 
-        private BuildPlacement(ThingDef def, ThingDef stuff, Rot4 rotation)
+        private BuildPlacement(BuildableDef def, ThingDef stuff, Rot4 rotation)
         {
             Def = def;
             Rotation = rotation;
@@ -31,6 +33,16 @@ namespace RiMCP.Command
             Stuff = def.MadeFromStuff ? tool.StuffDef : null;
         }
 
+        public TerrainDef Terrain
+        {
+            get { return Def as TerrainDef; }
+        }
+
+        public bool IsFloor
+        {
+            get { return Def is TerrainDef; }
+        }
+
         // field prefixes error messages, such as "placements[2].".
         public static BuildPlacement Resolve(string defName, string stuffName, string rotation, string field)
         {
@@ -38,10 +50,14 @@ namespace RiMCP.Command
             {
                 throw new CommandException(400, "Missing required field '" + field + "def'.");
             }
-            ThingDef def = DefDatabase<ThingDef>.GetNamedSilentFail(defName.Trim());
+            BuildableDef def = (BuildableDef)DefDatabase<ThingDef>.GetNamedSilentFail(defName.Trim()) ?? DefDatabase<TerrainDef>.GetNamedSilentFail(defName.Trim());
             if (def == null || !def.BuildableByPlayer)
             {
-                throw new CommandException(400, "'" + defName + "' in " + field + "def is not a building the player can build. Use a defName from search_defs.");
+                throw new CommandException(400, "'" + defName + "' in " + field + "def is not a building or floor the player can build. Use a defName from search_defs (kind thing or terrain).");
+            }
+            if (def is TerrainDef && (!string.IsNullOrWhiteSpace(stuffName) || !string.IsNullOrWhiteSpace(rotation)))
+            {
+                throw new CommandException(400, def.LabelCap + " is a floor: it has no material or rotation; leave out " + field + "stuff and " + field + "rotation.");
             }
 
             ThingDef stuff = null;
@@ -67,7 +83,7 @@ namespace RiMCP.Command
                 {
                     throw new CommandException(400, "Field '" + field + "rotation' must be north, east, south, or west.");
                 }
-                if (!def.rotatable && parsed.Value != def.defaultPlacingRot)
+                if (!((ThingDef)def).rotatable && parsed.Value != def.defaultPlacingRot)
                 {
                     throw new CommandException(400, def.LabelCap + " cannot be rotated; leave out " + field + "rotation.");
                 }
@@ -134,7 +150,8 @@ namespace RiMCP.Command
             foreach (Thing thing in cell.GetThingList(map))
             {
                 bool sameDef = thing.def == Def || ((thing is Blueprint || thing is Frame) && thing.def.entityDefToBuild == Def);
-                if (sameDef && thing.Position == cell && thing.Rotation == Rotation && MaterialOf(thing) == Stuff)
+                // A floor has no rotation or material, so any blueprint or frame of it at the cell counts.
+                if (sameDef && thing.Position == cell && (IsFloor || (thing.Rotation == Rotation && MaterialOf(thing) == Stuff)))
                 {
                     return thing;
                 }
@@ -142,7 +159,21 @@ namespace RiMCP.Command
             return null;
         }
 
-        // Places a blueprint, or the finished building when it takes no work, and returns it.
+        // Whether the floor is already laid at the cell, as the game's own check for it (the
+        // "terrain is already" refusal) sees it.
+        public bool FloorAlreadyLaid(IntVec3 cell, Map map)
+        {
+            TerrainDef terrain = Terrain;
+            if (terrain == null)
+            {
+                return false;
+            }
+            return map.terrainGrid.TerrainAt(cell) == terrain || (terrain.isFoundation && map.terrainGrid.FoundationAt(cell) == terrain);
+        }
+
+        // Places a blueprint, or the finished building when it takes no work, and returns it. In god
+        // mode the tool lays a floor at once, and there is nothing to return: FloorAlreadyLaid then
+        // says it is done.
         public Thing Place(IntVec3 cell, Map map)
         {
             tool.DesignateSingleCell(cell);
@@ -167,14 +198,25 @@ namespace RiMCP.Command
         public object Describe()
         {
             CellRect footprint = GenAdj.OccupiedRect(IntVec3.Zero, Rotation, Def.Size);
+            ThingDef building = Def as ThingDef;
             return Dto.Obj(
                 Dto.Field("def", ReadUtil.Def(Def)),
                 Dto.Field("stuff", ReadUtil.Def(Stuff)),
-                Dto.Field("rotation", RotationName(Rotation)),
+                Dto.Field("rotation", IsFloor ? null : RotationName(Rotation)),
                 Dto.Field("footprintOffset", Rect(footprint)),
-                Dto.Field("interactionCellOffset", Def.hasInteractionCell ? Offset(ThingUtility.InteractionCell(Def.interactionCellOffset, IntVec3.Zero, Rotation)) : null),
+                Dto.Field("interactionCellOffset", building != null && building.hasInteractionCell ? Offset(ThingUtility.InteractionCell(building.interactionCellOffset, IntVec3.Zero, Rotation)) : null),
+                Dto.Field("floor", IsFloor ? FloorFacts(Terrain) : null),
                 Dto.Field("cost", Cost().Select(entry => (object)Dto.Obj(Dto.Field("defName", entry.thingDef.defName), Dto.Field("count", entry.count))).ToArray()),
                 Dto.Field("workToBuild", Math.Round(Def.GetStatValueAbstract(StatDefOf.WorkToBuild, Stuff))));
+        }
+
+        // What a floor does to the room it is in, as the game's terrain stats say.
+        private static object FloorFacts(TerrainDef terrain)
+        {
+            return Dto.Obj(
+                Dto.Field("beauty", Math.Round(terrain.GetStatValueAbstract(StatDefOf.Beauty), 2)),
+                Dto.Field("cleanliness", Math.Round(terrain.GetStatValueAbstract(StatDefOf.Cleanliness), 2)),
+                Dto.Field("fertility", terrain.fertility < 0f ? null : (object)Math.Round(terrain.fertility, 2)));
         }
 
         // What would stop these buildings being built once placed: nobody able to build them, or
@@ -184,7 +226,7 @@ namespace RiMCP.Command
         {
             List<object> blockers = new List<object>();
             List<BuildPlacement> list = placed.ToList();
-            foreach (ThingDef def in list.Select(placement => placement.Def).Distinct())
+            foreach (BuildableDef def in list.Select(placement => placement.Def).Distinct())
             {
                 AddWorkerBlocker(blockers, map, def, SkillDefOf.Construction, def.constructionSkillPrerequisite);
                 AddWorkerBlocker(blockers, map, def, SkillDefOf.Artistic, def.artisticSkillPrerequisite);
@@ -227,7 +269,7 @@ namespace RiMCP.Command
             return blockers;
         }
 
-        private static void AddWorkerBlocker(List<object> blockers, Map map, ThingDef def, SkillDef skill, int minSkill)
+        private static void AddWorkerBlocker(List<object> blockers, Map map, BuildableDef def, SkillDef skill, int minSkill)
         {
             if ((minSkill > 0 || skill == SkillDefOf.Construction) && !Blockers.AnyWorker(map, WorkTypeDefOf.Construction, skill, minSkill))
             {
@@ -262,7 +304,7 @@ namespace RiMCP.Command
         // The game's build tool at a chosen rotation, which otherwise only the player's rotate keys set.
         private sealed class Tool : Designator_Build
         {
-            public Tool(ThingDef def, ThingDef stuff, Rot4 rotation) : base(def)
+            public Tool(BuildableDef def, ThingDef stuff, Rot4 rotation) : base(def)
             {
                 placingRot = rotation;
                 if (stuff != null)

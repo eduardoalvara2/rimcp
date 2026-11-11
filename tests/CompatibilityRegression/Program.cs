@@ -227,7 +227,7 @@ internal static class Program
         {
             IEnumerable tools = (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null);
             Dictionary<string, int> counts = tools.Cast<object>().GroupBy(tool => Field<string>(tool, "Group") ?? "(none)").ToDictionary(group => group.Key, group => group.Count());
-            var expected = new Dictionary<string, int> { { "observe", 43 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 4 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
+            var expected = new Dictionary<string, int> { { "observe", 43 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 5 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
             int count;
             Check(counts.Count == expected.Count && expected.All(pair => counts.TryGetValue(pair.Key, out count) && count == pair.Value),
                 "group sizes: " + string.Join(", ", counts.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
@@ -345,6 +345,8 @@ internal static class Program
             var blocker = (Dictionary<string, object>)mod.GetType("RiMCP.Read.Blockers", true).GetMethod("Of", Static).Invoke(null, new object[] { "missingMaterial", "Needs steel.", fields });
             Check(blocker.Keys.SequenceEqual(new[] { "kind", "defName", "message" }), "blocker fields: " + string.Join(", ", blocker.Keys));
         });
+        Test("place_blueprint takes floors and floor rectangles, and remove_floor is an Orders tool, with every check that needs no game", CheckFloorTools);
+        Test("a floor rectangle counts each cell once, groups refusals by reason, and takes its corners in either order", CheckCellSweep);
         Test("food trends need six hours of samples and use the last three days", CheckFoodTrend);
         Test("bill states follow ShouldDoNow without changing the bill", CheckBillStates);
         Test("storage edits keep special filters and report any change to the accepted items", CheckStorageEdits);
@@ -2047,7 +2049,7 @@ internal static class Program
         Check(isOn("load_game") && list("ToolsOn").Count == 0, "turning its group on drops the group's exceptions");
         group("gameSettings", true);
         Check(current() == "full", "choices that amount to a preset are that preset");
-        foreach (string name in new[] { "designate", "designate_animal", "place_blueprint", "execute_trade" })
+        foreach (string name in new[] { "designate", "designate_animal", "place_blueprint", "remove_floor", "execute_trade" })
         {
             tool(name, false);
         }
@@ -3293,6 +3295,86 @@ internal static class Program
     }
 
     // list_traders, get_trade and execute_trade: routes, groups, schemas, and the key format.
+    private static void CheckFloorTools()
+    {
+        IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
+        object remove = Tool("remove_floor");
+        Check(Field<string>(remove, "HandlerId") == "remove-floor" && Field<string>(remove, "Group") == "orders" && Field<string>(remove, "Method") == "POST" && Field<string>(remove, "PathTemplate") == "/v1/floors/remove", "remove_floor is an Orders tool at POST /v1/floors/remove");
+        Delegate handler = handlers["remove-floor"] as Delegate;
+        Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == "BuildService.RemoveFloor", "remove_floor must be handled by BuildService.RemoveFloor");
+        Check(Field<string[]>(remove, "BodyKeys").SequenceEqual(new[] { "mapId", "rects", "cancel", "requestId", "expectedLoadId" }), "remove_floor sends its fields in the body, with the load guard");
+        Check(((string[])Field<Dictionary<string, object>>(remove, "InputSchema")["required"]).SequenceEqual(new[] { "rects" }), "remove_floor needs rects");
+        Check((bool)Field<Dictionary<string, object>>(remove, "Annotations")["destructiveHint"], "removing a floor is destructive");
+
+        object place = Tool("place_blueprint");
+        var items = (Dictionary<string, object>)((Dictionary<string, object>)ToolProperties(place)["placements"])["items"];
+        var itemProperties = (Dictionary<string, object>)items["properties"];
+        Check(new[] { "def", "stuff", "x", "z", "x2", "z2", "rotation" }.All(itemProperties.ContainsKey), "a placement takes a rectangle's second corner");
+        Check(((object[])items["required"]).Cast<string>().SequenceEqual(new[] { "def", "x", "z" }), "a rectangle needs no more than a position");
+        Check(Field<string>(place, "Description").Contains("WoodPlankFloor") && Field<string>(place, "Description").Contains("x2"), "place_blueprint documents floors and the rectangle");
+
+        // Shape errors are turned away before anything needs a game; input that passes only lacks one.
+        Func<string, object> placeBody = placements => Invoke("RiMCP.Command.BuildService", "PlaceBlueprint", Request("/v1/blueprints", "POST", "{\"placements\":[" + placements + "]}"), Route());
+        ExpectCommandError(400, () => placeBody("{\"def\":\"WoodPlankFloor\",\"x\":1,\"z\":1,\"x2\":3}"));
+        ExpectCommandError(400, () => placeBody("{\"def\":\"WoodPlankFloor\",\"x\":1,\"z\":1,\"z2\":3}"));
+        ExpectCommandError(400, () => placeBody("{\"def\":\"WoodPlankFloor\",\"x\":0,\"z\":0,\"x2\":60,\"z2\":0}"));
+        ExpectCommandError(400, () => placeBody("{\"def\":\"WoodPlankFloor\",\"x\":0,\"z\":0,\"x2\":0,\"z2\":60}"));
+        ExpectCommandError(400, () => placeBody("{\"def\":\"WoodPlankFloor\",\"x\":0,\"z\":0,\"x2\":59,\"z2\":59},{\"def\":\"WoodPlankFloor\",\"x\":100,\"z\":100,\"x2\":100,\"z2\":100}"));
+        ExpectCommandError(409, () => placeBody("{\"def\":\"WoodPlankFloor\",\"x\":3,\"z\":3,\"x2\":1,\"z2\":1}"));
+        ExpectCommandError(409, () => placeBody("{\"def\":\"WoodPlankFloor\",\"x\":0,\"z\":0,\"x2\":59,\"z2\":59}"));
+
+        Func<string, object> removeBody = body => Invoke("RiMCP.Command.BuildService", "RemoveFloor", Request("/v1/floors/remove", "POST", body), Route());
+        ExpectCommandError(400, () => removeBody("{}"));
+        ExpectCommandError(400, () => removeBody("{\"rects\":[]}"));
+        ExpectCommandError(400, () => removeBody("{\"rects\":[{\"x\":1,\"z\":1}],\"requestId\":\"" + new string('x', 101) + "\"}"));
+        ExpectCommandError(409, () => removeBody("{\"rects\":[{\"x\":1,\"z\":1,\"width\":4,\"height\":3}]}"));
+
+        // A terrain the architect menu does not offer is refused by name, whichever database it is in.
+        TerrainDef bare = (TerrainDef)FormatterServices.GetUninitializedObject(typeof(TerrainDef));
+        bare.defName = "RegressionBareGround";
+        bare.label = "bare ground";
+        DefDatabase<TerrainDef>.Add(bare);
+        Check(!bare.BuildableByPlayer, "the seeded terrain is in no architect category");
+        ExpectCommandError(400, () => Invoke("RiMCP.Command.BuildPlacement", "Resolve", "RegressionBareGround", null, null, "placements[0]."));
+        ExpectCommandError(400, () => Invoke("RiMCP.Command.BuildPlacement", "Resolve", "NoSuchFloor", null, null, "placements[0]."));
+    }
+
+    private static void CheckCellSweep()
+    {
+        Type sweepType = mod.GetType("RiMCP.Command.CellSweep", true);
+        MethodInfo reject = sweepType.GetMethod("Reject");
+        object sweep = Activator.CreateInstance(sweepType);
+        for (int i = 0; i < 14; i++) reject.Invoke(sweep, new object[] { new IntVec3(i, 0, 0), "Cannot be built on." });
+        for (int i = 0; i < 3; i++) reject.Invoke(sweep, new object[] { new IntVec3(i, 0, 1), "Space already occupied." });
+        sweepType.GetMethod("Apply").Invoke(sweep, null);
+        sweepType.GetMethod("Apply").Invoke(sweep, null);
+        sweepType.GetMethod("Satisfy").Invoke(sweep, null);
+        Check(Field<int>(sweep, "Cells") == 20 && Field<int>(sweep, "Applied") == 2 && Field<int>(sweep, "AlreadySatisfied") == 1 && Field<int>(sweep, "Rejected") == 17, "every cell is counted once");
+        Check((string)sweepType.GetProperty("Outcome").GetValue(sweep, null) == "applied", "a rectangle where any cell took the floor is applied");
+        object[] reasons = (object[])sweepType.GetMethod("Reasons").Invoke(sweep, null);
+        var first = (Dictionary<string, object>)reasons[0];
+        var second = (Dictionary<string, object>)reasons[1];
+        Check(reasons.Length == 2 && (string)first["reason"] == "Cannot be built on." && (int)first["count"] == 14 && (int)second["count"] == 3, "reasons come most common first, each with its full count");
+        Check(((object[])first["positions"]).Length == 10 && ((object[])second["positions"]).Length == 3, "a reason names only its first positions, and the count still covers them all");
+
+        Func<Action<object>, string> outcomeOf = fill =>
+        {
+            object one = Activator.CreateInstance(sweepType);
+            fill(one);
+            return (string)sweepType.GetProperty("Outcome").GetValue(one, null);
+        };
+        Check(outcomeOf(s => sweepType.GetMethod("Satisfy").Invoke(s, null)) == "alreadySatisfied", "a rectangle that already has the floor is alreadySatisfied");
+        Check(outcomeOf(s => reject.Invoke(s, new object[] { IntVec3.Zero, "Cannot be built on." })) == "rejected", "a rectangle where no cell can take the floor is rejected");
+        Check(outcomeOf(s => { }) == "rejected", "a rectangle with no cell on the map is rejected");
+
+        // Corners come in either order, and a side is at most 60 cells.
+        CellRect rect = (CellRect)Invoke("RiMCP.Command.CellSweep", "Between", 3, 5, 1, 2, "placements[0]");
+        Check(rect.minX == 1 && rect.maxX == 3 && rect.minZ == 2 && rect.maxZ == 5 && rect.Area == 12, "the rectangle runs between the corners: " + rect);
+        rect = (CellRect)Invoke("RiMCP.Command.CellSweep", "Between", 0, 0, 59, 59, "placements[0]");
+        Check(rect.Area == 3600, "60 by 60 cells is allowed");
+        ExpectCommandError(400, () => Invoke("RiMCP.Command.CellSweep", "Between", 0, 0, 60, 0, "placements[0]"));
+    }
+
     private static void CheckTradeTools()
     {
         IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
