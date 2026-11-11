@@ -131,6 +131,41 @@ namespace RiMCP.Read
             }
         }
 
+        // What a roof over a growing zone means for it, for the commands that change a zone: the
+        // counts, and a warning when most of its cells are roofed. The zone is never refused for
+        // it, since the player may mean to remove the roof.
+        public static Dictionary<string, object> Roofs(Zone_Growing zone, out string warning)
+        {
+            int roofed, thick, queued;
+            CountRoofs(zone.Map, zone.Cells, out roofed, out thick, out queued);
+            warning = RoofWarning(zone.Cells.Count, roofed, thick, queued);
+            return Dto.Obj(
+                Dto.Field("roofedCells", roofed),
+                Dto.Field("thickRoofedCells", thick > 0 ? (object)thick : null),
+                Dto.Field("roofRemovalQueued", queued > 0 ? (object)queued : null));
+        }
+
+        // Null unless more than half the zone's cells are under a roof, which keeps out the sun:
+        // nothing sown there grows, except under a sun lamp.
+        public static string RoofWarning(int cells, int roofed, int thick, int queued)
+        {
+            if (cells <= 0 || roofed * 2 <= cells)
+            {
+                return null;
+            }
+            string head = roofed + " of " + cells + " cells are under a roof: a zone mostly under a roof never grows (the sun does not reach it; only a sun lamp lights it). ";
+            if (thick >= roofed)
+            {
+                return head + "It is overhead mountain, which nothing can remove: move the zone.";
+            }
+            string tail = thick > 0 ? " " + thick + " of them are overhead mountain, which nothing can remove." : "";
+            if (queued >= roofed - thick)
+            {
+                return head + "Roof removal is already queued in the no-roof area for the rest; colonists with Construction will clear it." + tail;
+            }
+            return head + "Paint noRoof with set_area (colonists with Construction remove the roofs) or move it." + tail;
+        }
+
         private static Func<Plant, T> Getter<T>(string name)
         {
             PropertyInfo property = typeof(Plant).GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);

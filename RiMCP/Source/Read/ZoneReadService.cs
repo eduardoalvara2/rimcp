@@ -90,6 +90,10 @@ namespace RiMCP.Read
             {
                 dto["growing"] = GrowingSummary.Of((Zone_Growing)record.Zone);
             }
+            if (record.Zone is Zone_Fishing)
+            {
+                dto["fishing"] = FishingSummary.Of((Zone_Fishing)record.Zone);
+            }
             if (record.Area != null)
             {
                 dto["area"] = Dto.Obj(
@@ -133,7 +137,7 @@ namespace RiMCP.Read
             public static ZoneRecord ForZone(Map map, Zone zone)
             {
                 IntVec3 representative = zone.Cells.Count == 0 ? IntVec3.Invalid : zone.Cells[0];
-                string kind = zone is Zone_Stockpile ? "stockpile" : zone is Zone_Growing ? "growing" : "zone";
+                string kind = zone is Zone_Stockpile ? "stockpile" : zone is Zone_Growing ? "growing" : zone is Zone_Fishing ? "fishing" : "zone";
                 return new ZoneRecord
                 {
                     Id = ZoneId(map, zone),

@@ -302,6 +302,8 @@ internal static class Program
         Test("set_area paints the roof areas with the game's roof tools' checks, and each takes its cells out of the other", CheckRoofAreaPaint);
         Test("growing zones count roofed cells, overhead mountain, and roofs waiting for removal", CheckRoofCounts);
         Test("get_map_view offers exactly its layers, and set_area names both roof areas", CheckRoofSchemas);
+        Test("a growing zone mostly under a roof gets a warning with the counts, and is never refused for it", CheckRoofWarning);
+        Test("fishing zones are a kind of set_zone and the zone reads, and refuse without Odyssey, research, or the same kind of water", CheckFishingZones);
         Test("the trade tools reach their handlers on their routes and groups, and document the tradeable key", CheckTradeTools);
         Test("fire_incident reaches its handler in the game settings group and offers exactly the allow-listed incidents", CheckIncidentTool);
         Test("trade tools refuse bad input before anything runs, and each needs a loaded game", CheckTradeInputs);
@@ -3191,6 +3193,61 @@ internal static class Program
         mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("CountRoofs", Static).Invoke(null, args);
         Check((int)args[2] == 3 && (int)args[3] == 1 && (int)args[4] == 1,
             "roofed " + args[2] + ", thick " + args[3] + ", queued for removal " + args[4] + "; expected 3, 1 and 1");
+    }
+
+    private static void CheckRoofWarning()
+    {
+        MethodInfo warn = mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("RoofWarning", Static);
+        Func<int, int, int, int, string> warning = (cells, roofed, thick, queued) => (string)warn.Invoke(null, new object[] { cells, roofed, thick, queued });
+        Check(warning(10, 5, 0, 0) == null && warning(10, 0, 0, 0) == null && warning(0, 0, 0, 0) == null, "half the zone or less under a roof is not a warning");
+        string mostly = warning(10, 6, 0, 0);
+        Check(mostly != null && mostly.Contains("6 of 10") && mostly.Contains("never grows") && mostly.Contains("noRoof") && mostly.Contains("set_area") && mostly.Contains("move it"), "most roofed: " + mostly);
+        string mountain = warning(10, 8, 8, 0);
+        Check(mountain.Contains("overhead mountain") && mountain.Contains("move the zone") && !mountain.Contains("noRoof"), "only mountain roofs must say to move: " + mountain);
+        string queued = warning(10, 7, 2, 5);
+        Check(queued.Contains("already queued") && queued.Contains("2 of them are overhead mountain"), "removal queued: " + queued);
+        string mixed = warning(10, 7, 2, 1);
+        Check(mixed.Contains("noRoof") && mixed.Contains("2 of them"), "some mountain, some free to remove: " + mixed);
+
+        // The command's counts come from a zone's own cells, and the warning from them.
+        Area buildRoof, noRoof;
+        Map map = RoofMap(out buildRoof, out noRoof);
+        for (int x = 0; x < 3; x++) SetRoof(map, x, 1, BuiltRoof());
+        SetRoof(map, 3, 1, ThickRoof());
+        Zone_Growing zone = (Zone_Growing)FormatterServices.GetUninitializedObject(typeof(Zone_Growing));
+        ZoneManager manager = (ZoneManager)FormatterServices.GetUninitializedObject(typeof(ZoneManager));
+        typeof(ZoneManager).GetField("map", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).SetValue(manager, map);
+        typeof(Zone).GetField("zoneManager", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).SetValue(zone, manager);
+        typeof(Zone).GetField("cells", BindingFlags.Instance | BindingFlags.Public).SetValue(zone, Enumerable.Range(0, 5).Select(x => new IntVec3(x, 0, 1)).ToList());
+        object[] args = { zone, null };
+        var roofs = (Dictionary<string, object>)mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("Roofs", Static).Invoke(null, args);
+        Check((int)roofs["roofedCells"] == 4 && (int)roofs["thickRoofedCells"] == 1 && !roofs.ContainsKey("roofRemovalQueued"), "roofs: " + string.Join(", ", roofs.Keys));
+        Check(((string)args[1]).Contains("4 of 5"), "the warning counts the zone's cells: " + args[1]);
+    }
+
+    private static void CheckFishingZones()
+    {
+        Type summary = mod.GetType("RiMCP.Read.FishingSummary", true);
+        foreach (string name in new[] { "OverTargetPopulation", "UnderTargetResourceCount" })
+        {
+            Delegate getter = (Delegate)summary.GetField(name, Static).GetValue(null);
+            Check(getter.Method.DeclaringType == typeof(Zone_Fishing), name + " must read the game's Zone_Fishing member, not the fallback");
+        }
+        Func<bool, bool, bool, string> unavailable = (odyssey, researched, god) => (string)summary.GetMethod("Unavailable", Static).Invoke(null, new object[] { odyssey, researched, god });
+        Check(unavailable(false, true, true).Contains("Odyssey"), "without Odyssey a fishing zone is refused, even in god mode: " + unavailable(false, true, true));
+        Check(unavailable(true, false, false).Contains("Fishing research"), "unresearched fishing is refused: " + unavailable(true, false, false));
+        Check(unavailable(true, true, false) == null && unavailable(true, false, true) == null, "researched, or in god mode, fishing is available");
+        MethodInfo mismatch = summary.GetMethod("WaterMismatch", Static);
+        Check(mismatch.Invoke(null, new object[] { WaterBodyType.Freshwater, WaterBodyType.Freshwater }) == null, "the same kind of water is accepted");
+        string refusal = (string)mismatch.Invoke(null, new object[] { WaterBodyType.Freshwater, WaterBodyType.Saltwater });
+        Check(refusal.Contains("freshwater") && refusal.Contains("saltwater") && refusal.Contains("separate zone"), "another kind of water is refused: " + refusal);
+
+        object spec = Tool("set_zone");
+        var kinds = (string[])((Dictionary<string, object>)ToolProperties(spec)["kind"])["enum"];
+        Check(kinds.SequenceEqual(new[] { "stockpile", "growing", "fishing" }), "set_zone kinds: " + string.Join(", ", kinds));
+        Check(Field<string>(spec, "Description").Contains("fishing") && Field<string>(spec, "Description").Contains("roofs") && Field<string>(spec, "Description").Contains("warnings"), "set_zone documents fishing zones and the roof warning");
+        Check(Field<string>(Tool("set_growing_zone"), "Description").Contains("warnings") && Field<string>(Tool("list_zones"), "Description").Contains("fishPopulation"), "set_growing_zone and list_zones document the new fields");
+        Check(Field<string[]>(spec, "BodyKeys").Contains("kind"), "kind is sent in the body");
     }
 
     private static void CheckRoofSchemas()

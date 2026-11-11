@@ -12,7 +12,7 @@ namespace RiMCP.Command
     // Stockpiles, growing zones, storage and crop settings, and areas.
     internal static class ZoneCommandService
     {
-        private static readonly string[] ZoneKinds = { "stockpile", "growing" };
+        private static readonly string[] ZoneKinds = { "stockpile", "growing", "fishing" };
 
         public static BridgeResponse SetZone(BridgeRequest request, RouteMatch route)
         {
@@ -25,7 +25,7 @@ namespace RiMCP.Command
             string kind = string.IsNullOrWhiteSpace(body.Kind) ? null : ZoneKinds.FirstOrDefault(candidate => string.Equals(candidate, body.Kind.Trim(), StringComparison.OrdinalIgnoreCase));
             if (!string.IsNullOrWhiteSpace(body.Kind) && kind == null)
             {
-                throw new CommandException(400, "Field 'kind' must be stockpile or growing.");
+                throw new CommandException(400, "Field 'kind' must be stockpile, growing or fishing.");
             }
             // Every rectangle is checked before anything changes, so a malformed request changes nothing.
             int addOutside, removeOutside;
@@ -43,7 +43,7 @@ namespace RiMCP.Command
                 }
                 if (KindOf(zone) == null)
                 {
-                    throw new CommandException(409, "Only stockpile and growing zones can be edited.");
+                    throw new CommandException(409, "Only stockpile, growing and fishing zones can be edited.");
                 }
                 if (kind != null && kind != KindOf(zone))
                 {
@@ -69,11 +69,20 @@ namespace RiMCP.Command
                 }
                 if (kind == null || body.Add == null || body.Add.Length == 0)
                 {
-                    throw new CommandException(400, "To create a zone, give kind (stockpile or growing) and add rectangles; to change one, give zoneId.");
+                    throw new CommandException(400, "To create a zone, give kind (stockpile, growing or fishing) and add rectangles; to change one, give zoneId.");
                 }
                 if (body.Remove != null)
                 {
                     throw new CommandException(400, "A new zone has no cells to remove.");
+                }
+                if (kind == "fishing")
+                {
+                    // The game's fishing tool is only there with Odyssey, and once Fishing is researched.
+                    string unavailable = FishingSummary.Unavailable(ModsConfig.OdysseyActive, ResearchProjectDefOf.Fishing.IsFinished, DebugSettings.godMode);
+                    if (unavailable != null)
+                    {
+                        throw new CommandException(409, unavailable);
+                    }
                 }
                 key = RequestKey.For("set_zone", requestId, map, kind, body.Label, body.Add);
             }
@@ -87,7 +96,11 @@ namespace RiMCP.Command
                     throw new CommandException(409, "Another zone is already called '" + label + "'.");
                 }
 
-                Designator_ZoneAdd designator = kind == "stockpile" ? (Designator_ZoneAdd)new Designator_ZoneAddStockpile_Resources() : new Designator_ZoneAdd_Growing();
+                Designator_ZoneAdd designator = kind == "stockpile" ? (Designator_ZoneAdd)new Designator_ZoneAddStockpile_Resources()
+                    : kind == "fishing" ? new Designator_ZoneAdd_Fishing() : new Designator_ZoneAdd_Growing();
+                // A fishing zone holds one kind of water, the one of its first cell.
+                Zone_Fishing existingFishing = zone as Zone_Fishing;
+                WaterBodyType? waterType = existingFishing != null && existingFishing.Cells.Count > 0 ? (WaterBodyType?)existingFishing.FishType : null;
                 float farmable = kind == "growing" ? GrowingSummary.ZoneMinFertility() : 0f;
                 CellOutcomes added = new CellOutcomes { Outside = addOutside };
                 List<IntVec3> accepted = new List<IntVec3>();
@@ -109,6 +122,17 @@ namespace RiMCP.Command
                     {
                         added.Reject(cell, string.IsNullOrWhiteSpace(report.Reason) ? CellRejection(kind, cell, map, farmable) : report.Reason.StripTags());
                         continue;
+                    }
+                    if (kind == "fishing")
+                    {
+                        WaterBodyType cellType = cell.GetWaterBodyType(map);
+                        string mismatch = waterType.HasValue ? FishingSummary.WaterMismatch(waterType.Value, cellType) : null;
+                        if (mismatch != null)
+                        {
+                            added.Reject(cell, mismatch);
+                            continue;
+                        }
+                        waterType = cellType;
                     }
                     accepted.Add(cell);
                 }
@@ -162,8 +186,15 @@ namespace RiMCP.Command
                     stockpile.slotGroup.RemoveHaulDesignationOnStoredThings();
                 }
 
+                bool live = zone != null && zone.Cells.Count > 0;
+                string roofWarning = null;
+                Zone_Growing growing = live ? zone as Zone_Growing : null;
+                Zone_Fishing fishing = live ? zone as Zone_Fishing : null;
                 Dictionary<string, object> data = Dto.Obj(
-                    Dto.Field("zone", zone == null || zone.Cells.Count == 0 ? null : SerializeZone(map, zone)),
+                    Dto.Field("zone", live ? SerializeZone(map, zone) : null),
+                    Dto.Field("roofs", growing == null ? null : GrowingSummary.Roofs(growing, out roofWarning)),
+                    Dto.Field("fishing", fishing == null ? null : FishingSummary.Of(fishing)),
+                    Dto.Field("warnings", roofWarning == null ? null : new object[] { roofWarning }),
                     Dto.Field("created", created),
                     Dto.Field("added", body.Add == null ? null : added.ToDto()),
                     Dto.Field("removed", body.Remove == null ? null : removed.ToDto()),
@@ -412,10 +443,13 @@ namespace RiMCP.Command
                 changed = true;
             }
 
+            string roofWarning;
+            GrowingSummary.Roofs(zone, out roofWarning);
             return CommandEnvelope.Ok(context, changed, Dto.Obj(
                 Dto.Field("zone", SerializeZone(map, zone)),
                 Dto.Field("previousPlant", ReadUtil.Def(previous)),
-                Dto.Field("growing", GrowingSummary.Of(zone))));
+                Dto.Field("growing", GrowingSummary.Of(zone)),
+                Dto.Field("warnings", roofWarning == null ? null : new object[] { roofWarning })));
         }
 
         // Why the crop menu would not offer this crop for the zone; null when it would.
@@ -594,7 +628,7 @@ namespace RiMCP.Command
 
         private static string KindOf(Zone zone)
         {
-            return zone is Zone_Stockpile ? "stockpile" : zone is Zone_Growing ? "growing" : null;
+            return zone is Zone_Stockpile ? "stockpile" : zone is Zone_Growing ? "growing" : zone is Zone_Fishing ? "fishing" : null;
         }
 
         // The zone designators refuse without a reason; the commonest cause for crops is fertility.
@@ -604,6 +638,10 @@ namespace RiMCP.Command
             if (kind == "growing" && fertility < farmable)
             {
                 return "Not fertile enough for a growing zone: fertility " + fertility.ToStringPercent() + ", needs " + farmable.ToStringPercent() + ".";
+            }
+            if (kind == "fishing")
+            {
+                return "Cannot place a fishing zone here: unexplored, a building, or too close to the map edge.";
             }
             return kind == "stockpile"
                 ? "Cannot hold a stockpile here: unexplored, a wall or building, impassable terrain, or too close to the map edge."
