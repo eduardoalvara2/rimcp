@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using RimWorld;
 using UnityEngine;
@@ -132,28 +133,69 @@ namespace RiMCP.Read
         }
 
         // What a roof over a growing zone means for it, for the commands that change a zone: the
-        // counts, and a warning when most of its cells are roofed. The zone is never refused for
-        // it, since the player may mean to remove the roof.
+        // counts of every roofed cell, and a warning when most of its cells are roofed and get no
+        // sun. A cell within a sun lamp's (or any glower's) overlight radius does not count: the
+        // lamp lights it, though it is scheduled off at night. The zone is never refused for it,
+        // since the player may mean to remove the roof.
         public static Dictionary<string, object> Roofs(Zone_Growing zone, out string warning)
         {
+            Map map = zone.Map;
             int roofed, thick, queued;
-            CountRoofs(zone.Map, zone.Cells, out roofed, out thick, out queued);
-            warning = RoofWarning(zone.Cells.Count, roofed, thick, queued);
+            CountRoofs(map, zone.Cells, out roofed, out thick, out queued);
+            warning = null;
+            if (NeedsSun(zone.GetPlantDefToGrow()))
+            {
+                List<KeyValuePair<IntVec3, float>> lamps = Overlights(map);
+                int dark, darkThick, darkQueued;
+                CountRoofs(map, zone.Cells.Where(cell => !LitByOverlight(cell, lamps)), out dark, out darkThick, out darkQueued);
+                warning = RoofWarning(zone.Cells.Count, dark, darkThick, darkQueued);
+            }
             return Dto.Obj(
                 Dto.Field("roofedCells", roofed),
                 Dto.Field("thickRoofedCells", thick > 0 ? (object)thick : null),
                 Dto.Field("roofRemovalQueued", queued > 0 ? (object)queued : null));
         }
 
+        // Whether a crop needs the sun: cave plants and anything that grows without light (the
+        // fungus of Ideology dies in it) do not, so a roof is no fault for them.
+        public static bool NeedsSun(ThingDef crop)
+        {
+            return crop == null || crop.plant == null || (!crop.plant.cavePlant && crop.plant.growMinGlow > 0f);
+        }
+
+        // The buildings whose glower has an overlight radius (a sun lamp's is 7), with it.
+        private static List<KeyValuePair<IntVec3, float>> Overlights(Map map)
+        {
+            List<KeyValuePair<IntVec3, float>> lamps = new List<KeyValuePair<IntVec3, float>>();
+            if (map.listerBuildings == null)
+            {
+                return lamps;
+            }
+            foreach (Building building in map.listerBuildings.allBuildingsColonist)
+            {
+                CompGlower glower = building.TryGetComp<CompGlower>();
+                if (glower != null && glower.Props.overlightRadius > 0f)
+                {
+                    lamps.Add(new KeyValuePair<IntVec3, float>(building.Position, glower.Props.overlightRadius));
+                }
+            }
+            return lamps;
+        }
+
+        public static bool LitByOverlight(IntVec3 cell, List<KeyValuePair<IntVec3, float>> lamps)
+        {
+            return lamps.Any(lamp => cell.InHorDistOf(lamp.Key, lamp.Value));
+        }
+
         // Null unless more than half the zone's cells are under a roof, which keeps out the sun:
-        // nothing sown there grows, except under a sun lamp.
+        // nothing sown there grows. The counts are of the cells that get no sun.
         public static string RoofWarning(int cells, int roofed, int thick, int queued)
         {
             if (cells <= 0 || roofed * 2 <= cells)
             {
                 return null;
             }
-            string head = roofed + " of " + cells + " cells are under a roof: a zone mostly under a roof never grows (the sun does not reach it; only a sun lamp lights it). ";
+            string head = roofed + " of " + cells + " cells are roofed and get no sun: a zone mostly under a roof never grows. ";
             if (thick >= roofed)
             {
                 return head + "It is overhead mountain, which nothing can remove: move the zone.";

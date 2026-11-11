@@ -3219,10 +3219,35 @@ internal static class Program
         typeof(ZoneManager).GetField("map", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).SetValue(manager, map);
         typeof(Zone).GetField("zoneManager", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).SetValue(zone, manager);
         typeof(Zone).GetField("cells", BindingFlags.Instance | BindingFlags.Public).SetValue(zone, Enumerable.Range(0, 5).Select(x => new IntVec3(x, 0, 1)).ToList());
+        ThingDef crop = PlantDef(0.51f, false);
+        typeof(Zone_Growing).GetField("plantDefToGrow", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(zone, crop);
         object[] args = { zone, null };
         var roofs = (Dictionary<string, object>)mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("Roofs", Static).Invoke(null, args);
         Check((int)roofs["roofedCells"] == 4 && (int)roofs["thickRoofedCells"] == 1 && !roofs.ContainsKey("roofRemovalQueued"), "roofs: " + string.Join(", ", roofs.Keys));
-        Check(((string)args[1]).Contains("4 of 5"), "the warning counts the zone's cells: " + args[1]);
+        Check(((string)args[1]).Contains("4 of 5") && ((string)args[1]).Contains("get no sun"), "the warning counts the zone's cells: " + args[1]);
+
+        // A crop that grows in the dark, or in caves, is not at fault under a roof: no warning, same counts.
+        MethodInfo needsSun = mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("NeedsSun", Static);
+        Func<float, bool, bool> needs = (glow, cave) => (bool)needsSun.Invoke(null, new object[] { PlantDef(glow, cave) });
+        Check(needs(0.51f, false) && !needs(0f, false) && !needs(0.51f, true) && (bool)needsSun.Invoke(null, new object[] { null }), "only a crop that needs light needs the sun");
+        crop.plant.growMinGlow = 0f;
+        args = new object[] { zone, null };
+        roofs = (Dictionary<string, object>)mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("Roofs", Static).Invoke(null, args);
+        Check(args[1] == null && (int)roofs["roofedCells"] == 4, "a fungus under a roof is not warned about, and its roofs are still counted");
+
+        // Cells within a lamp's overlight radius are lit by it.
+        Type lampType = typeof(List<KeyValuePair<IntVec3, float>>);
+        var lamps = new List<KeyValuePair<IntVec3, float>> { new KeyValuePair<IntVec3, float>(new IntVec3(2, 0, 2), 7f) };
+        MethodInfo lit = mod.GetType("RiMCP.Read.GrowingSummary", true).GetMethod("LitByOverlight", Static);
+        Check((bool)lit.Invoke(null, new object[] { new IntVec3(2, 0, 8), lamps }) && !(bool)lit.Invoke(null, new object[] { new IntVec3(2, 0, 10), lamps }), "a sun lamp lights cells within its overlight radius, not beyond");
+    }
+
+    // A plant def made without the game's content loading, which its constructor would start.
+    private static ThingDef PlantDef(float growMinGlow, bool cavePlant)
+    {
+        ThingDef def = (ThingDef)FormatterServices.GetUninitializedObject(typeof(ThingDef));
+        def.plant = new PlantProperties { growMinGlow = growMinGlow, cavePlant = cavePlant };
+        return def;
     }
 
     private static void CheckFishingZones()
@@ -3233,7 +3258,14 @@ internal static class Program
             Delegate getter = (Delegate)summary.GetField(name, Static).GetValue(null);
             Check(getter.Method.DeclaringType == typeof(Zone_Fishing), name + " must read the game's Zone_Fishing member, not the fallback");
         }
-        Func<bool, bool, bool, string> unavailable = (odyssey, researched, god) => (string)summary.GetMethod("Unavailable", Static).Invoke(null, new object[] { odyssey, researched, god });
+        Func<bool, bool, bool, string> unavailable = (odyssey, researched, god) => (string)summary.GetMethod("Unavailable", Static).Invoke(null, new object[] { odyssey, (Func<bool>)(() => researched), god });
+        // Fishing research is null without Odyssey, so it must not be asked for first.
+        Check(((string)summary.GetMethod("Unavailable", Static).Invoke(null, new object[] { false, (Func<bool>)(() => { throw new Exception("research asked for without Odyssey"); }), false })).Contains("Odyssey"), "the Odyssey check comes before the research");
+
+        // Each kind makes its own zone type: fishing must not fall through to a growing zone.
+        MethodInfo zoneType = mod.GetType("RiMCP.Command.ZoneCommandService", true).GetMethod("ZoneTypeFor", Static);
+        Check((Type)zoneType.Invoke(null, new object[] { "stockpile" }) == typeof(Zone_Stockpile) && (Type)zoneType.Invoke(null, new object[] { "growing" }) == typeof(Zone_Growing) && (Type)zoneType.Invoke(null, new object[] { "fishing" }) == typeof(Zone_Fishing), "each set_zone kind maps to its zone type");
+        ExpectCommandError(400, () => Invoke("RiMCP.Command.ZoneCommandService", "ZoneTypeFor", "bogus"));
         Check(unavailable(false, true, true).Contains("Odyssey"), "without Odyssey a fishing zone is refused, even in god mode: " + unavailable(false, true, true));
         Check(unavailable(true, false, false).Contains("Fishing research"), "unresearched fishing is refused: " + unavailable(true, false, false));
         Check(unavailable(true, true, false) == null && unavailable(true, false, true) == null, "researched, or in god mode, fishing is available");

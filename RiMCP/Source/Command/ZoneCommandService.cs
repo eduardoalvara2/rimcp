@@ -60,6 +60,8 @@ namespace RiMCP.Command
                     zone.Delete(false);
                     return CommandEnvelope.Ok(context, true, Dto.Obj(Dto.Field("deleted", true), Dto.Field("zone", deleted)));
                 }
+                // The designator reads the fish tracker, which a map has only with Odyssey.
+                RequireFishingAvailable(kind, false);
             }
             else
             {
@@ -75,15 +77,7 @@ namespace RiMCP.Command
                 {
                     throw new CommandException(400, "A new zone has no cells to remove.");
                 }
-                if (kind == "fishing")
-                {
-                    // The game's fishing tool is only there with Odyssey, and once Fishing is researched.
-                    string unavailable = FishingSummary.Unavailable(ModsConfig.OdysseyActive, ResearchProjectDefOf.Fishing.IsFinished, DebugSettings.godMode);
-                    if (unavailable != null)
-                    {
-                        throw new CommandException(409, unavailable);
-                    }
-                }
+                RequireFishingAvailable(kind, true);
                 key = RequestKey.For("set_zone", requestId, map, kind, body.Label, body.Add);
             }
 
@@ -140,7 +134,7 @@ namespace RiMCP.Command
                 bool created = false;
                 if (zone == null && accepted.Count > 0)
                 {
-                    zone = kind == "stockpile" ? (Zone)new Zone_Stockpile(StorageSettingsPreset.DefaultStockpile, map.zoneManager) : new Zone_Growing(map.zoneManager);
+                    zone = NewZone(kind, map.zoneManager);
                     map.zoneManager.RegisterZone(zone);
                     zone.AddCell(accepted[0]);
                     accepted.RemoveAt(0);
@@ -623,6 +617,42 @@ namespace RiMCP.Command
             foreach (IntVec3 cell in pending)
             {
                 outcomes.Reject(cell, "Not connected to the zone; create a separate zone for it.");
+            }
+        }
+
+        // The zone type each kind makes; NewZone builds one.
+        internal static Type ZoneTypeFor(string kind)
+        {
+            switch (kind)
+            {
+                case "stockpile": return typeof(Zone_Stockpile);
+                case "growing": return typeof(Zone_Growing);
+                case "fishing": return typeof(Zone_Fishing);
+                default: throw new CommandException(400, "Field 'kind' must be stockpile, growing or fishing.");
+            }
+        }
+
+        private static Zone NewZone(string kind, ZoneManager manager)
+        {
+            Type type = ZoneTypeFor(kind);
+            if (type == typeof(Zone_Stockpile))
+            {
+                return new Zone_Stockpile(StorageSettingsPreset.DefaultStockpile, manager);
+            }
+            return type == typeof(Zone_Fishing) ? (Zone)new Zone_Fishing(manager) : new Zone_Growing(manager);
+        }
+
+        // The game's fishing tool is only there with Odyssey, and to make a zone once Fishing is researched.
+        private static void RequireFishingAvailable(string kind, bool creating)
+        {
+            if (kind != "fishing")
+            {
+                return;
+            }
+            string unavailable = FishingSummary.Unavailable(ModsConfig.OdysseyActive, () => !creating || ResearchProjectDefOf.Fishing.IsFinished, DebugSettings.godMode);
+            if (unavailable != null)
+            {
+                throw new CommandException(409, unavailable);
             }
         }
 

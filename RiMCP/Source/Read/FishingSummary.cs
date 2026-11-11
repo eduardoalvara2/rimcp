@@ -22,6 +22,13 @@ namespace RiMCP.Read
         public static Dictionary<string, object> Of(Zone_Fishing zone)
         {
             Map map = zone.Map;
+            if (map.waterBodyTracker == null)
+            {
+                // A fishing zone from an Odyssey save, loaded without the DLC: the fish are not tracked.
+                return Dto.Obj(
+                    Dto.Field("waterType", zone.FishType.ToString()),
+                    Dto.Field("blockers", Blockers.ToArray(new List<object> { Blockers.Of("noOdyssey", "Odyssey is not active, so this map tracks no fish and nobody fishes here.") })));
+            }
             IntVec3 first = zone.Cells.Count == 0 ? IntVec3.Invalid : zone.Cells[0];
             int fishable = 0;
             foreach (IntVec3 cell in zone.Cells)
@@ -84,14 +91,15 @@ namespace RiMCP.Read
         }
 
         // Why a fishing zone cannot be created or edited, or null. The game offers the tool only
-        // with Odyssey and, outside god mode, once Fishing is researched.
-        public static string Unavailable(bool odysseyActive, bool researched, bool godMode)
+        // with Odyssey and, outside god mode, once Fishing is researched. The research is null
+        // without Odyssey, so it is only asked for after that check.
+        public static string Unavailable(bool odysseyActive, Func<bool> researched, bool godMode)
         {
             if (!odysseyActive)
             {
                 return "Fishing zones need the Odyssey DLC, which is not active.";
             }
-            return researched || godMode ? null : "Fishing zones need the Fishing research, which is not finished.";
+            return godMode || researched() ? null : "Fishing zones need the Fishing research, which is not finished.";
         }
 
         private static string Name(WaterBodyType type)
