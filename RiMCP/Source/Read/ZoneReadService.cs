@@ -22,8 +22,23 @@ namespace RiMCP.Read
                 page.NextCursor);
         }
 
+        private static readonly string[] SectionNames = { "terrain" };
+
+        // include names this tool does not know are refused, so a typo is not a silent omission.
+        public static void CheckSections(ReadRequest query)
+        {
+            foreach (string name in query.Include)
+            {
+                if (!SectionNames.Contains(name, System.StringComparer.OrdinalIgnoreCase))
+                {
+                    throw new BridgeException(400, "Unknown include '" + name + "'. Sections: " + string.Join(", ", SectionNames) + ".");
+                }
+            }
+        }
+
         public static BridgeResponse GetZone(BridgeRequest request, RouteMatch route)
         {
+            CheckSections(ReadRequest.FromUri(request.Uri));
             ReadContext context = ReadContext.FromMap(request);
             string id = route["id"];
 

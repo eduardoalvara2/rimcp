@@ -3493,33 +3493,47 @@ internal static class Program
     {
         Type zoneTerrain = mod.GetType("RiMCP.Read.ZoneTerrain", true);
         Type cellType = zoneTerrain.GetNestedType("TerrainCell");
-        Func<string, bool, float, object> cell = (name, water, factor) =>
+        Func<string, bool, float, bool, bool, object> cellOf = (name, water, factor, temporary, underWater) =>
         {
             object value = Activator.CreateInstance(cellType);
             cellType.GetField("DefName").SetValue(value, name);
             cellType.GetField("IsWater").SetValue(value, water);
             cellType.GetField("ExtraDeteriorationFactor").SetValue(value, factor);
+            cellType.GetField("Temporary").SetValue(value, temporary);
+            cellType.GetField("WaterUnderTemporary").SetValue(value, underWater);
             return value;
         };
+        Func<string, bool, float, object> cell = (name, water, factor) => cellOf(name, water, factor, false, false);
         IList cells = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(cellType));
         for (int i = 0; i < 2; i++) cells.Add(cell("Soil", false, 0f));
         for (int i = 0; i < 3; i++) cells.Add(cell("WaterShallow", true, 3f));
         cells.Add(cell("WaterMovingShallow", true, 3f));
         cells.Add(cell("WoodPlankFloor", false, 0f));
+        for (int i = 0; i < 4; i++) cells.Add(cellOf("ThinIce", false, 0f, true, true));
+        cells.Add(cellOf("ThinIce", false, 0f, true, false));
         var summary = (Dictionary<string, object>)zoneTerrain.GetMethod("Summarize").Invoke(null, new object[] { cells });
         var counts = (Dictionary<string, object>)summary["terrainCounts"];
-        Check(counts.Count == 4 && (int)counts["Soil"] == 2 && (int)counts["WaterShallow"] == 3 && (int)counts["WaterMovingShallow"] == 1 && (int)counts["WoodPlankFloor"] == 1, "terrainCounts maps each def to its cells");
+        Check(counts.Count == 5 && (int)counts["ThinIce"] == 5 && (int)counts["Soil"] == 2 && (int)counts["WaterShallow"] == 3 && (int)counts["WaterMovingShallow"] == 1 && (int)counts["WoodPlankFloor"] == 1, "terrainCounts maps each def to its cells");
         var wet = ((object[])summary["terrainDeterioration"]).Cast<Dictionary<string, object>>().ToList();
         Check(wet.Count == 2 && (string)wet[0]["defName"] == "WaterShallow" && (int)wet[0]["cells"] == 3 && Convert.ToDouble(wet[0]["extraDeteriorationFactor"]) == 3 && (string)wet[1]["defName"] == "WaterMovingShallow", "only terrains with a factor above 0 are listed, most cells first");
-        Check((int)summary["waterCells"] == 4, "waterCells counts every water terrain");
+        Check((int)summary["waterCells"] == 4, "waterCells counts every water terrain, and not the ice over water");
+        var temporary = (Dictionary<string, object>)summary["temporaryCells"];
+        Check(temporary.Count == 1 && (int)temporary["ThinIce"] == 5 && (int)summary["waterUnderTemporaryCells"] == 4, "ice is counted as temporary, and the water under it apart from water now");
+        Check(!wet.Any(row => (string)row["defName"] == "ThinIce"), "a factor of 0 is not listed");
+        cells.Add(cell("Mud", false, -0.5f));
+        Check(((object[])((Dictionary<string, object>)zoneTerrain.GetMethod("Summarize").Invoke(null, new object[] { cells }))["terrainDeterioration"]).Length == 3, "a factor other than 0 is listed, as the game tests it");
         var dry = (Dictionary<string, object>)zoneTerrain.GetMethod("Summarize").Invoke(null, new object[] { Activator.CreateInstance(typeof(List<>).MakeGenericType(cellType)) });
+        Check(((Dictionary<string, object>)dry["temporaryCells"]).Count == 0 && (int)dry["waterUnderTemporaryCells"] == 0, "no cells have no temporary terrain");
         Check(((Dictionary<string, object>)dry["terrainCounts"]).Count == 0 && ((object[])dry["terrainDeterioration"]).Length == 0 && (int)dry["waterCells"] == 0, "no cells give empty counts");
 
         object spec = Tool("get_zone");
         var include = (Dictionary<string, object>)ToolProperties(spec)["include"];
         Check(((string[])((Dictionary<string, object>)include["items"])["enum"]).SequenceEqual(new[] { "terrain" }), "get_zone offers include terrain");
         string description = Field<string>(spec, "Description");
-        Check(new[] { "terrainCounts", "terrainDeterioration", "extraDeteriorationFactor", "waterCells" }.All(description.Contains), "get_zone documents the terrain fields");
+        Check(new[] { "terrainCounts", "terrainDeterioration", "extraDeteriorationFactor", "waterCells", "temporaryCells", "waterUnderTemporaryCells" }.All(description.Contains), "get_zone documents the terrain fields");
+        Func<string, object> zoneSections = path => Invoke("RiMCP.Read.ZoneReadService", "CheckSections", Invoke("RiMCP.Read.ReadRequest", "FromUri", new Uri("http://127.0.0.1" + path)));
+        zoneSections("/v1/zones/x?include=terrain");
+        ExpectBridgeError(400, () => zoneSections("/v1/zones/x?include=terrian"));
     }
 
     private static void CheckTradeTools()
