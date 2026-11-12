@@ -347,6 +347,7 @@ internal static class Program
         });
         Test("place_blueprint takes floors and floor rectangles, and remove_floor is an Orders tool, with every check that needs no game", CheckFloorTools);
         Test("a floor rectangle counts each cell once, groups refusals by reason, and takes its corners in either order", CheckCellSweep);
+        Test("get_zone reads the terrain under a zone: counts by def, the terrains that deteriorate things faster, water cells, and per-cell terrain on request", CheckZoneTerrain);
         Test("list_rooms is an Observe read with exactly the sections it knows, a summary by default, and room ids built from the anchor cell", CheckRoomTool);
         Test("room measures: bounding box and runs, dark cells under 0.3 glow, what is two cells out from the walls, and floor against natural ground", CheckRoomMeasures);
         Test("food trends need six hours of samples and use the last three days", CheckFoodTrend);
@@ -3486,6 +3487,39 @@ internal static class Program
         Check((int)floor["constructedCells"] == 5 && (int)floor["naturalCells"] == 3 && (string)floor["dominant"] == "WoodPlankFloor", "floor cells are split into laid and natural");
         Check(byTerrain.Count == 2 && (string)byTerrain[0]["defName"] == "WoodPlankFloor" && (int)byTerrain[0]["cells"] == 5 && Convert.ToDouble(byTerrain[1]["beauty"]) == -3 && Convert.ToDouble(byTerrain[1]["cleanliness"]) == -1, "terrains come most cells first with their beauty and cleanliness");
         Check(!((Dictionary<string, object>)measures.GetMethod("Floor").Invoke(null, new object[] { floors, false })).ContainsKey("byTerrain"), "the terrain list comes only on request");
+    }
+
+    private static void CheckZoneTerrain()
+    {
+        Type zoneTerrain = mod.GetType("RiMCP.Read.ZoneTerrain", true);
+        Type cellType = zoneTerrain.GetNestedType("TerrainCell");
+        Func<string, bool, float, object> cell = (name, water, factor) =>
+        {
+            object value = Activator.CreateInstance(cellType);
+            cellType.GetField("DefName").SetValue(value, name);
+            cellType.GetField("IsWater").SetValue(value, water);
+            cellType.GetField("ExtraDeteriorationFactor").SetValue(value, factor);
+            return value;
+        };
+        IList cells = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(cellType));
+        for (int i = 0; i < 2; i++) cells.Add(cell("Soil", false, 0f));
+        for (int i = 0; i < 3; i++) cells.Add(cell("WaterShallow", true, 3f));
+        cells.Add(cell("WaterMovingShallow", true, 3f));
+        cells.Add(cell("WoodPlankFloor", false, 0f));
+        var summary = (Dictionary<string, object>)zoneTerrain.GetMethod("Summarize").Invoke(null, new object[] { cells });
+        var counts = (Dictionary<string, object>)summary["terrainCounts"];
+        Check(counts.Count == 4 && (int)counts["Soil"] == 2 && (int)counts["WaterShallow"] == 3 && (int)counts["WaterMovingShallow"] == 1 && (int)counts["WoodPlankFloor"] == 1, "terrainCounts maps each def to its cells");
+        var wet = ((object[])summary["terrainDeterioration"]).Cast<Dictionary<string, object>>().ToList();
+        Check(wet.Count == 2 && (string)wet[0]["defName"] == "WaterShallow" && (int)wet[0]["cells"] == 3 && Convert.ToDouble(wet[0]["extraDeteriorationFactor"]) == 3 && (string)wet[1]["defName"] == "WaterMovingShallow", "only terrains with a factor above 0 are listed, most cells first");
+        Check((int)summary["waterCells"] == 4, "waterCells counts every water terrain");
+        var dry = (Dictionary<string, object>)zoneTerrain.GetMethod("Summarize").Invoke(null, new object[] { Activator.CreateInstance(typeof(List<>).MakeGenericType(cellType)) });
+        Check(((Dictionary<string, object>)dry["terrainCounts"]).Count == 0 && ((object[])dry["terrainDeterioration"]).Length == 0 && (int)dry["waterCells"] == 0, "no cells give empty counts");
+
+        object spec = Tool("get_zone");
+        var include = (Dictionary<string, object>)ToolProperties(spec)["include"];
+        Check(((string[])((Dictionary<string, object>)include["items"])["enum"]).SequenceEqual(new[] { "terrain" }), "get_zone offers include terrain");
+        string description = Field<string>(spec, "Description");
+        Check(new[] { "terrainCounts", "terrainDeterioration", "extraDeteriorationFactor", "waterCells" }.All(description.Contains), "get_zone documents the terrain fields");
     }
 
     private static void CheckTradeTools()

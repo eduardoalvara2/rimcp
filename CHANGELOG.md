@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.0+rimplayer.8 (rimplayer fork) - 2026-11-11
+
+### Added
+
+- `get_zone` reads the terrain under a zone or area, which `get_map_view` hides under a zone mark (a stockpile cell draws as `=`, so water under one was invisible). The answer always carries `terrainCounts` (TerrainDef defName to the number of the zone's cells on it; the top layer, so a laid floor counts instead of the ground under it), `terrainDeterioration` (rows of `defName`, `cells` and `extraDeteriorationFactor` for each terrain whose factor is above 0, most cells first; things lying there deteriorate that much faster, and every water terrain has 3) and `waterCells` (cells on water). `include` `terrain` adds a `terrain` defName to each of the listed cells (the first 200, as before). `list_zones` is unchanged.
+- Not yet tried in game: the terrain read on a live map. The regression suite checks the counting and the schema.
+
 ## 1.1.0+rimplayer.7 (rimplayer fork) - 2026-11-10
 
 ### Added

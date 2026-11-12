@@ -32,7 +32,22 @@ namespace RiMCP.Read
             {
                 return BridgeResponse.Error(404, "Zone not found.");
             }
-            return ReadEnvelope.Ok(context, SerializeZone(record, ReadDetail.Full));
+            Dictionary<string, object> dto = (Dictionary<string, object>)SerializeZone(record, ReadDetail.Full);
+            Map map = context.Map;
+            foreach (KeyValuePair<string, object> pair in ZoneTerrain.Summarize(record.Cells.Select(cell => ZoneTerrain.Read(map, cell))))
+            {
+                dto[pair.Key] = pair.Value;
+            }
+            if (context.Request.Include.Contains("terrain"))
+            {
+                // Each listed cell with the terrain under it (the same first 200 as cells).
+                dto["cells"] = record.Cells.Take(200).Select(cell => (object)Dto.Obj(
+                    Dto.Field("x", cell.x),
+                    Dto.Field("y", cell.y),
+                    Dto.Field("z", cell.z),
+                    Dto.Field("terrain", ZoneTerrain.Read(map, cell).DefName))).ToArray();
+            }
+            return ReadEnvelope.Ok(context, dto);
         }
 
         public static Zone_Stockpile FindStockpile(Map map, string id)
