@@ -281,6 +281,11 @@ namespace RiMCP.Read
             dto["bleedRatePerDay"] = bleeding == null ? null : bleeding.RateDto;
             dto["hoursUntilBloodLossDeath"] = bleeding == null ? null : bleeding.HoursDto;
             dto["drafted"] = pawn.Drafted;
+            object guestFacts = GuestFacts.Of(pawn, role);
+            if (guestFacts != null)
+            {
+                dto["guest"] = guestFacts;
+            }
             dto["position"] = ReadUtil.Cell(pawn.PositionHeld);
             Pawn carrier = pawn.Spawned ? null : pawn.CarriedBy;
             if (carrier != null)

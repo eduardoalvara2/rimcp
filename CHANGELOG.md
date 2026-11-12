@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.0+rimplayer.9 (rimplayer fork) - 2026-11-11
+
+### Added
+
+- `get_pawn` and `list_pawns` give a humanlike who is not a colonist a `guest` object when they are a prisoner, a slave, held by another faction, downed, or would join if helped. Always: `status` (`prisoner`, `slave`, `guest` or `none`), `isPrisoner`, `isSlave`, `hostFaction`, `downed`, `willJoinIfRescued` (`Pawn_MindState.WillJoinColonyIfRescued`; when true the game's float menu offers Offer help instead of Rescue, and the pawn joins the colony the moment a colonist reaches them, with no recovery first), `canBeCaptured` and `recruitable` (`Pawn_GuestTracker.Recruitable`). For prisoners and slaves also `recruitMethod`, `recruitState`, `resistance` (as the prisoner tab shows it: at least 0.1 while above 0; omitted when not recruitable or a wild man), `will` (only with Ideology) and `interactionMode` (defName and label). Example: `"guest": {"status":"prisoner","isPrisoner":true,"isSlave":false,"hostFaction":{"name":"Colony","defName":"PlayerColony"},"downed":false,"willJoinIfRescued":false,"canBeCaptured":true,"recruitable":true,"recruitMethod":"resistance","recruitState":"resistanceRemaining","resistance":3.2,"will":1.4,"interactionMode":{"defName":"ReduceResistance","label":"Reduce resistance"}}`.
+- There is no recruit chance for a human in 1.6: `InteractionWorker_RecruitAttempt` lowers resistance on each warden conversation (negotiation ability times a mood factor times an opinion factor, 1 base) and the attempt at resistance 0 always succeeds, so the read gives `recruitState` and not a percentage. Only animals and wild men are recruited by a roll (`recruitMethod` `chance`).
+- `list_buildings` and `get_building` give each bed a `bed` object: `ownerType`, `forPrisoners`, `forSlaves`, `medical`, `slots`, `owners` and `occupants` (pawn ids) and `freeSlots` (slots without an owner, or for a medical bed without a patient), so a client counts free beds without reading gizmos.
+- Not yet tried in game: the `guest` and `bed` reads on a live map. The regression suite checks the pure rules and the tool descriptions.
+
 ## 1.1.0+rimplayer.8 (rimplayer fork) - 2026-11-11
 
 ### Added

@@ -202,6 +202,8 @@ internal static class Program
         Test("a fire episode stops once per size however it flickers, and ends only once it has been out a while", CheckFireEpisode);
         Test("a stuck check tries one target per place, nearest first, up to a cap", CheckStuckTargets);
         Test("fire, starving, stuck, and bleedingCritical stop by default, and the schema offers exactly the run's conditions", CheckStopConditions);
+        Test("guest facts: the tab's resistance, the recruit state, who carries a guest object, and what the descriptions promise", CheckGuestFacts);
+        Test("beds count free slots by owner, or by patient for a medical bed, and list_buildings documents them", CheckBedFacts);
         Test("bleeding reads as the Health tab shows it: rate per day, hours until blood loss kills, most urgent first", CheckBleedingReads);
         Test("advance stops when a colonist's bleeding turns critical, even between short runs, once per bleeding, and again only after it stops", CheckBleedingStops);
         Test("advance retries are recognised across recent runs and need matching arguments", CheckAdvanceReceipts);
@@ -2663,6 +2665,34 @@ internal static class Program
         Delegate lookup = Expression.Lambda(selector, Expression.Convert(Expression.Property(Expression.Constant(rows), "Item", key), mod.GetType("RiMCP.Read.Bleeding", true)), key).Compile();
         var ordered = (List<string>)urgent.Invoke(null, new object[] { rows.Keys.ToArray(), lookup });
         Check(ordered.SequenceEqual(new[] { "faster", "soon", "slow", "deathless" }), "soonest death first, then fastest bleeding, and those it cannot kill last: " + string.Join(",", ordered));
+    }
+
+    private static void CheckGuestFacts()
+    {
+        const string type = "RiMCP.Read.GuestFacts";
+        Check((float)Invoke(type, "ShownResistance", 0.02f) == 0.1f && (float)Invoke(type, "ShownResistance", 3.25f) == 3.25f && (float)Invoke(type, "ShownResistance", 0f) == 0f && (float)Invoke(type, "ShownResistance", -1f) == 0f, "resistance reads as the tab shows it: at least 0.1 while above 0, 0 otherwise");
+        Check((string)Invoke(type, "Status", true, false, true) == "prisoner" && (string)Invoke(type, "Status", false, true, false) == "slave" && (string)Invoke(type, "Status", false, false, true) == "guest" && (string)Invoke(type, "Status", false, false, false) == "none", "status is prisoner, slave, guest or none");
+        Check((string)Invoke(type, "RecruitState", false, true, 2f) == "notRecruitable" && (string)Invoke(type, "RecruitState", true, true, 2f) == "resistanceRemaining" && (string)Invoke(type, "RecruitState", true, true, 0f) == "readyToRecruit" && (string)Invoke(type, "RecruitState", true, false, 0f) == "byChance", "recruit state follows the flag, then resistance");
+        Check((string)Invoke(type, "RecruitMethod", true) == "chance" && (string)Invoke(type, "RecruitMethod", false) == "resistance", "wild men are recruited by chance, humans by resistance");
+        Check((bool)Invoke(type, "Applies", true, false, false, false, false, true, false), "a downed visitor has a guest object");
+        Check((bool)Invoke(type, "Applies", true, false, false, false, false, false, true), "a pawn who would join if helped has one");
+        Check((bool)Invoke(type, "Applies", true, false, true, false, true, false, false), "a prisoner has one");
+        Check(!(bool)Invoke(type, "Applies", true, true, false, false, false, true, true), "a colonist has none, downed or not");
+        Check(!(bool)Invoke(type, "Applies", false, false, false, false, false, true, false), "an animal has none");
+        Check(!(bool)Invoke(type, "Applies", true, false, false, false, false, false, false), "a standing visitor has none");
+        Check(Invoke(type, "Of", new Pawn(), "prisoner") == null, "a pawn without a guest tracker has none");
+        string pawn = Field<string>(Tool("get_pawn"), "Description");
+        Check(pawn.Contains("willJoinIfRescued") && pawn.Contains("Offer help") && pawn.Contains("recruitState") && pawn.Contains("resistance") && pawn.Contains("will") && pawn.Contains("interactionMode") && pawn.Contains("no recruit chance"), "get_pawn documents the guest object and that a human has no recruit chance");
+    }
+
+    private static void CheckBedFacts()
+    {
+        const string type = "RiMCP.Read.BedFacts";
+        Check((int)Invoke(type, "FreeSlots", false, 2, 1, 2) == 1, "a double bed with one owner has one free slot, whoever lies in it");
+        Check((int)Invoke(type, "FreeSlots", true, 1, 0, 1) == 0 && (int)Invoke(type, "FreeSlots", true, 1, 0, 0) == 1, "a medical bed is free when no patient lies in it");
+        Check((int)Invoke(type, "FreeSlots", false, 1, 3, 0) == 0, "free slots never go below 0");
+        string buildings = Field<string>(Tool("list_buildings"), "Description");
+        Check(buildings.Contains("forPrisoners") && buildings.Contains("freeSlots") && buildings.Contains("medical"), "list_buildings documents the bed object");
     }
 
     private static object Bleeder(string id, bool critical)

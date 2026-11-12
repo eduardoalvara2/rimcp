@@ -90,6 +90,12 @@ namespace RiMCP.Read
             dto["faction"] = building.Faction == null ? null : building.Faction.Name;
             dto["stuff"] = building.Stuff == null ? null : ReadUtil.Def(building.Stuff);
 
+            Building_Bed bed = building as Building_Bed;
+            if (bed != null)
+            {
+                dto["bed"] = BedFacts.Of(bed);
+            }
+
             if (detail != ReadDetail.Summary)
             {
                 CompPowerTrader power = building.TryGetComp<CompPowerTrader>();
