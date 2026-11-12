@@ -235,24 +235,41 @@ namespace RiMCP.Read
                 return "hostile";
             }
             // A carried pawn is in none of the map's spawned lists, so it is checked as they are built.
+            // Colony slaves are in FreeColonistsSpawned too (the game clears their host faction), so
+            // slaves are told apart first.
             bool spawned = pawn.Spawned;
-            if (spawned ? map.mapPawns.FreeColonistsSpawned.Contains(pawn) : pawn.Faction == Faction.OfPlayer && pawn.HostFaction == null && pawn.RaceProps != null && pawn.RaceProps.Humanlike && !(ModsConfig.AnomalyActive && pawn.IsSubhuman))
+            bool slave = spawned ? map.mapPawns.SlavesOfColonySpawned.Contains(pawn) : pawn.IsSlaveOfColony;
+            bool colonist = spawned ? map.mapPawns.FreeColonistsSpawned.Contains(pawn) : pawn.Faction == Faction.OfPlayer && pawn.HostFaction == null && pawn.RaceProps != null && pawn.RaceProps.Humanlike && !(ModsConfig.AnomalyActive && pawn.IsSubhuman);
+            bool prisoner = spawned ? map.mapPawns.PrisonersOfColonySpawned.Contains(pawn) : pawn.IsPrisonerOfColony;
+            bool animal = pawn.RaceProps != null && pawn.RaceProps.Animal;
+            bool humanlikeOfAnother = pawn.RaceProps != null && pawn.RaceProps.Humanlike && pawn.Faction != Faction.OfPlayer;
+            return Classify(pawn.HostileTo(Faction.OfPlayer), slave || pawn.IsSlaveOfColony, colonist, prisoner, animal, pawn.Faction == Faction.OfPlayer, humanlikeOfAnother);
+        }
+
+        // The order matters: a colony slave is also a free colonist to the game's lists.
+        public static string Classify(bool hostile, bool slave, bool colonist, bool prisoner, bool animal, bool playerFaction, bool humanlikeOfAnother)
+        {
+            if (hostile)
             {
-                return "colonist";
+                return "hostile";
             }
-            if (spawned ? map.mapPawns.SlavesOfColonySpawned.Contains(pawn) : pawn.IsSlaveOfColony)
+            if (slave)
             {
                 return "slave";
             }
-            if (spawned ? map.mapPawns.PrisonersOfColonySpawned.Contains(pawn) : pawn.IsPrisonerOfColony)
+            if (colonist)
+            {
+                return "colonist";
+            }
+            if (prisoner)
             {
                 return "prisoner";
             }
-            if (pawn.RaceProps != null && pawn.RaceProps.Animal)
+            if (animal)
             {
-                return pawn.Faction == Faction.OfPlayer ? "colonyAnimal" : "wildAnimal";
+                return playerFaction ? "colonyAnimal" : "wildAnimal";
             }
-            if (pawn.RaceProps != null && pawn.RaceProps.Humanlike && pawn.Faction != Faction.OfPlayer)
+            if (humanlikeOfAnother)
             {
                 return "guest";
             }

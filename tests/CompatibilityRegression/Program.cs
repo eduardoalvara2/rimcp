@@ -2674,25 +2674,68 @@ internal static class Program
         Check((string)Invoke(type, "Status", true, false, true) == "prisoner" && (string)Invoke(type, "Status", false, true, false) == "slave" && (string)Invoke(type, "Status", false, false, true) == "guest" && (string)Invoke(type, "Status", false, false, false) == "none", "status is prisoner, slave, guest or none");
         Check((string)Invoke(type, "RecruitState", false, true, 2f) == "notRecruitable" && (string)Invoke(type, "RecruitState", true, true, 2f) == "resistanceRemaining" && (string)Invoke(type, "RecruitState", true, true, 0f) == "readyToRecruit" && (string)Invoke(type, "RecruitState", true, false, 0f) == "byChance", "recruit state follows the flag, then resistance");
         Check((string)Invoke(type, "RecruitMethod", true) == "chance" && (string)Invoke(type, "RecruitMethod", false) == "resistance", "wild men are recruited by chance, humans by resistance");
+
+        // Applies(humanlike, colonist, prisoner, slave, hosted, downed, willJoin)
         Check((bool)Invoke(type, "Applies", true, false, false, false, false, true, false), "a downed visitor has a guest object");
         Check((bool)Invoke(type, "Applies", true, false, false, false, false, false, true), "a pawn who would join if helped has one");
         Check((bool)Invoke(type, "Applies", true, false, true, false, true, false, false), "a prisoner has one");
+        Check((bool)Invoke(type, "Applies", true, false, false, true, false, false, false), "a colony slave (role slave, no host faction) has one");
+        Check((bool)Invoke(type, "Applies", true, false, false, false, true, false, false), "a guest another faction hosts has one");
         Check(!(bool)Invoke(type, "Applies", true, true, false, false, false, true, true), "a colonist has none, downed or not");
         Check(!(bool)Invoke(type, "Applies", false, false, false, false, false, true, false), "an animal has none");
-        Check(!(bool)Invoke(type, "Applies", true, false, false, false, false, false, false), "a standing visitor has none");
+        Check(!(bool)Invoke(type, "Applies", true, false, false, false, false, false, false), "a standing visitor with no host has none");
+
+        // JoinAfterRescue(humanlike, prisoner, leftAfterRescue, factionAllows, unsafeWeather)
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, true, false) == "chance", "a pawn with no faction joins after a rescue by a 50% roll");
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, true, true) == "certain", "unsafe weather makes the roll certain");
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, false, true) == "never", "a faction without rescueesCanJoin never lets its pawn join, whatever the weather");
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, true, true, false) == "never" && (string)Invoke(type, "JoinAfterRescue", true, true, false, true, false) == "never" && (string)Invoke(type, "JoinAfterRescue", false, false, false, true, false) == "never", "one who left after a rescue, a prisoner and a non-humanlike never join");
+        Check((string)Invoke(type, "JoinOption", true, false) == "offerHelp" && (string)Invoke(type, "JoinOption", true, true) == "freePrisoner" && Invoke(type, "JoinOption", false, false) == null, "the float menu says Offer help, or Free prisoner for a held pawn, only when the pawn would join");
+        Check((bool)Invoke(type, "CaptureOffered", true, false, true, true) && !(bool)Invoke(type, "CaptureOffered", true, true, true, true) && !(bool)Invoke(type, "CaptureOffered", false, false, true, true) && !(bool)Invoke(type, "CaptureOffered", true, false, false, true) && !(bool)Invoke(type, "CaptureOffered", true, false, true, false), "capture is offered for a downed pawn the game lets one capture who is not our prisoner already");
         Check(Invoke(type, "Of", new Pawn(), "prisoner") == null, "a pawn without a guest tracker has none");
+
+        // Role logic: a colony slave is also in the game's free colonist list, and is still a slave.
+        const string service = "RiMCP.Read.PawnReadService";
+        Check((string)Invoke(service, "Classify", false, true, true, false, false, true, false) == "slave", "a colony slave in the colonist list is a slave, not a colonist");
+        Check((string)Invoke(service, "Classify", false, false, true, false, false, true, false) == "colonist" && (string)Invoke(service, "Classify", true, true, true, false, false, true, false) == "hostile", "colonists are colonists and a hostile slave is hostile");
+        Check((string)Invoke(service, "Classify", false, false, false, true, false, false, true) == "prisoner" && (string)Invoke(service, "Classify", false, false, false, false, false, false, true) == "guest" && (string)Invoke(service, "Classify", false, false, false, false, true, true, false) == "colonyAnimal", "prisoners, visitors and colony animals keep their roles");
+
         string pawn = Field<string>(Tool("get_pawn"), "Description");
-        Check(pawn.Contains("willJoinIfRescued") && pawn.Contains("Offer help") && pawn.Contains("recruitState") && pawn.Contains("resistance") && pawn.Contains("will") && pawn.Contains("interactionMode") && pawn.Contains("no recruit chance"), "get_pawn documents the guest object and that a human has no recruit chance");
+        foreach (string term in new[] { "`willJoinIfRescued`", "`joinAfterRescue`", "`joinOption`", "`captureOffered`", "`recruitState`", "`recruitAttemptsOn`", "`resistance`", "`slaveInteractionMode`", "`suppression`", "rescueesCanJoin", "Offer help", "no recruit chance", "twice a day", "Attempt to recruit" })
+        {
+            Check(pawn.Contains(term), "get_pawn documents " + term);
+        }
+        Check(Field<string>(Tool("list_pawns"), "Description").Contains("`guest` object"), "list_pawns says it carries the guest object");
+    }
+
+    private static int Free(bool humanlike, float maxBody, bool deathrest, string ownerType, bool inCell, bool medical, int slots, int owners, int occupants)
+    {
+        return (int)Invoke("RiMCP.Read.BedFacts", "FreeSlots", humanlike, maxBody, deathrest, ownerType, inCell, medical, slots, owners, occupants);
     }
 
     private static void CheckBedFacts()
     {
-        const string type = "RiMCP.Read.BedFacts";
-        Check((int)Invoke(type, "FreeSlots", false, 2, 1, 2) == 1, "a double bed with one owner has one free slot, whoever lies in it");
-        Check((int)Invoke(type, "FreeSlots", true, 1, 0, 1) == 0 && (int)Invoke(type, "FreeSlots", true, 1, 0, 0) == 1, "a medical bed is free when no patient lies in it");
-        Check((int)Invoke(type, "FreeSlots", false, 1, 3, 0) == 0, "free slots never go below 0");
+        const float big = 9999f;
+        Check(Free(true, big, false, "colonist", false, false, 1, 0, 0) == 1 && Free(true, big, false, "colonist", false, false, 1, 1, 0) == 0, "a single colonist bed is free until it has an owner");
+        Check(Free(true, big, false, "colonist", false, false, 2, 0, 0) == 1, "an unowned double bed takes a newcomer colonist in one slot, the other is for a lover");
+        Check(Free(true, big, false, "colonist", false, false, 2, 1, 0) == 0, "a partly owned double bed is open to a lover of its owner, so none for a newcomer");
+        Check(Free(true, big, false, "colonist", false, false, 1, 0, 1) == 0, "an occupied bed has no free slot");
+        Check(Free(true, big, false, "prisoner", true, false, 2, 1, 0) == 1 && Free(true, big, false, "prisoner", true, false, 2, 0, 0) == 2, "a double prison bed takes prisoners in every slot with no owner");
+        Check(Free(true, big, false, "slave", false, false, 2, 1, 0) == 1, "a slave bed takes slaves in slots with no owner");
+        Check(Free(true, big, false, "prisoner", false, false, 1, 0, 0) == 0, "a prisoner bed outside a prison cell is unusable");
+        Check(Free(true, 0.5f, false, "colonist", false, false, 1, 0, 0) == 0, "a crib is no bed for an adult");
+        Check(Free(true, big, true, "colonist", false, false, 1, 0, 0) == 0, "a deathrest casket gives an ordinary newcomer none");
+        Check(Free(true, big, false, "colonist", false, true, 1, 0, 0) == 1 && Free(true, big, false, "colonist", false, true, 1, 0, 1) == 0, "a medical bed is free when no patient lies in it");
+        Check(Free(true, big, false, "colonist", false, true, 2, 2, 0) == 2, "a medical bed's free slots ignore owners");
+        Check(Free(false, big, false, "animal", false, false, 1, 0, 0) == 1 && Free(false, big, false, "animal", false, false, 1, 0, 1) == 0, "an animal bed counts free by occupant, not as a colonist bed");
+        Check(Free(true, big, false, "colonist", false, false, 1, 3, 0) == 0, "free slots never go below 0");
+
         string buildings = Field<string>(Tool("list_buildings"), "Description");
-        Check(buildings.Contains("forPrisoners") && buildings.Contains("freeSlots") && buildings.Contains("medical"), "list_buildings documents the bed object");
+        foreach (string term in new[] { "forPrisoners", "freeSlots", "forBabies", "inPrisonCell", "deathrest", "{ids:{id,loadId}, name, label}", "lover" })
+        {
+            Check(buildings.Contains(term), "list_buildings documents " + term);
+        }
+        Check(Field<string>(Tool("get_building"), "Description").Contains("`bed` object"), "get_building says a bed has the bed object");
     }
 
     private static object Bleeder(string id, bool critical)

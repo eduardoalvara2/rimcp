@@ -8,9 +8,10 @@ using Verse.AI;
 namespace RiMCP.Read
 {
     // What the game says about a pawn who is not a colonist: the prisoner tab's resistance, will and
-    // interaction mode, whether the pawn can be recruited, and, for a downed visitor, whether
-    // offering help makes them join. Everything here is read from the game's own fields and rules;
-    // the pure parts take plain values so they can be checked without a map.
+    // interaction mode, whether the pawn can be recruited, for a slave the slave tab's suppression,
+    // and, for a downed visitor, whether helping or rescuing them makes them join. Everything here
+    // is read from the game's own fields and rules; the pure parts take plain values so they can be
+    // checked without a map.
     internal static class GuestFacts
     {
         // Resistance is reduced by the warden's interactions and recruiting succeeds once it is 0.
@@ -34,8 +35,8 @@ namespace RiMCP.Read
         }
 
         // Where the recruitment stands, by the game's InteractionWorker_RecruitAttempt: while
-        // resistance is above 0 each warden conversation lowers it, at 0 the next recruit attempt
-        // succeeds.
+        // resistance is above 0 each warden conversation (in Reduce resistance mode) lowers it, at 0
+        // the next recruit attempt (Attempt to recruit mode) succeeds.
         public static string RecruitState(bool recruitable, bool byResistance, float resistance)
         {
             if (!recruitable)
@@ -61,6 +62,35 @@ namespace RiMCP.Read
             return prisoner || slave || hosted || downed || willJoin;
         }
 
+        // What the Rescue path does, by Pawn_GuestTracker.Notify_PawnUndowned: the pawn joins only
+        // when no faction owns them or their faction has rescueesCanJoin (in Core only the hidden
+        // Ancients), they are no prisoner and have not already left after a rescue; then the game
+        // rolls a die seeded by the pawn, 50%, or 100% when the weather is unsafe for them (outdoor
+        // temperature outside their safe range, toxic fallout or noxious haze). The roll itself is
+        // not read: certain says the weather makes it 100%, chance that it is 50%.
+        public static string JoinAfterRescue(bool humanlike, bool prisoner, bool leftAfterRescue, bool factionAllows, bool unsafeWeather)
+        {
+            if (!humanlike || prisoner || leftAfterRescue || !factionAllows)
+            {
+                return "never";
+            }
+            return unsafeWeather ? "certain" : "chance";
+        }
+
+        // The option the float menu gives a pawn who would join if helped: Offer help, or Free
+        // prisoner for one another faction holds. Rescue is not offered then.
+        public static string JoinOption(bool willJoin, bool prisoner)
+        {
+            return !willJoin ? null : prisoner ? "freePrisoner" : "offerHelp";
+        }
+
+        // FloatMenuOptionProvider_CapturePawn without the rescuer: a downed, non-colony pawn the
+        // game lets one capture. Whether a colonist can reach them is for list_pawn_actions.
+        public static bool CaptureOffered(bool downed, bool prisonerOfColony, bool canBeCaptured, bool wantsToBeRescued)
+        {
+            return downed && !prisonerOfColony && canBeCaptured && wantsToBeRescued;
+        }
+
         public static double Round(float value)
         {
             return Math.Round(value, 2);
@@ -81,6 +111,7 @@ namespace RiMCP.Read
             Pawn_GuestTracker guest = pawn.guest;
             bool recruitable = guest.Recruitable;
             bool byResistance = !pawn.AnimalOrWildMan();
+            bool canBeCaptured = pawn.CanBeCaptured();
             Dictionary<string, object> dto = Dto.Obj(
                 Dto.Field("status", Status(pawn.IsPrisoner, pawn.IsSlave, hosted)),
                 Dto.Field("isPrisoner", pawn.IsPrisoner),
@@ -88,23 +119,54 @@ namespace RiMCP.Read
                 Dto.Field("hostFaction", SummaryDto.FactionIdentity(pawn.HostFaction)),
                 Dto.Field("downed", pawn.Downed),
                 Dto.Field("willJoinIfRescued", willJoin),
-                Dto.Field("canBeCaptured", pawn.CanBeCaptured()),
+                Dto.Field("joinOption", JoinOption(willJoin, pawn.IsPrisoner)),
+                Dto.Field("joinAfterRescue", JoinAfterRescue(true, pawn.IsPrisoner, guest.leftAfterRescue, FactionAllowsJoin(pawn), UnsafeWeather(pawn))),
+                Dto.Field("canBeCaptured", canBeCaptured),
+                Dto.Field("captureOffered", pawn.Spawned && CaptureOffered(pawn.Downed, pawn.IsPrisonerOfColony, canBeCaptured, HealthAIUtility.WantsToBeRescued(pawn))),
                 Dto.Field("recruitable", recruitable));
-            if (pawn.IsPrisoner || pawn.IsSlave)
+            if (pawn.IsPrisonerOfColony)
             {
                 dto["recruitMethod"] = RecruitMethod(!byResistance);
                 dto["recruitState"] = RecruitState(recruitable, byResistance, guest.resistance);
+                dto["recruitAttemptsOn"] = guest.IsInteractionEnabled(PrisonerInteractionModeDefOf.AttemptRecruit);
                 if (recruitable && byResistance)
                 {
                     dto["resistance"] = Round(ShownResistance(guest.resistance));
                 }
-                if (ModsConfig.IdeologyActive)
+                if (ModsConfig.IdeologyActive && byResistance)
                 {
                     dto["will"] = Round(guest.will);
                 }
                 dto["interactionMode"] = ReadUtil.Def(guest.ExclusiveInteractionMode);
             }
+            else if (pawn.IsSlaveOfColony)
+            {
+                dto["slaveInteractionMode"] = ReadUtil.Def(guest.slaveInteractionMode);
+                Need_Suppression suppression = pawn.needs == null ? null : pawn.needs.TryGetNeed<Need_Suppression>();
+                if (suppression != null)
+                {
+                    dto["suppression"] = Round(suppression.CurLevel);
+                    dto["suppressionFallRate"] = Round(pawn.GetStatValue(StatDefOf.SlaveSuppressionFallRate));
+                }
+            }
             return dto;
+        }
+
+        private static bool FactionAllowsJoin(Pawn pawn)
+        {
+            return pawn.Faction == null || pawn.Faction.def.rescueesCanJoin;
+        }
+
+        private static bool UnsafeWeather(Pawn pawn)
+        {
+            Map map = pawn.MapHeld;
+            if (map == null)
+            {
+                return false;
+            }
+            return !(pawn.SafeTemperatureRange().Includes(map.mapTemperature.OutdoorTemp)
+                && !map.gameConditionManager.ConditionIsActive(GameConditionDefOf.ToxicFallout)
+                && (!ModsConfig.BiotechActive || !map.gameConditionManager.ConditionIsActive(GameConditionDefOf.NoxiousHaze)));
         }
     }
 }
