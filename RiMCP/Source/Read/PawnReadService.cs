@@ -211,13 +211,7 @@ namespace RiMCP.Read
                 }
                 string role = RoleForPawn(map, pawn);
                 string roleKey = role.ToLowerInvariant();
-                if (normalized == "all" ||
-                    normalized == "core" && IsCoreRole(role) ||
-                    normalized == roleKey ||
-                    normalized == roleKey + "s" ||
-                    normalized == "animals" && role == "colonyAnimal" ||
-                    normalized == "wildlife" && role == "wildAnimal" ||
-                    normalized == "threats" && role == "hostile")
+                if (MatchesFilter(normalized, role))
                 {
                     yield return new PawnRole(pawn, role);
                 }
@@ -274,6 +268,28 @@ namespace RiMCP.Read
                 return "guest";
             }
             return "other";
+        }
+
+        // The colony's people, as the game's free colonist lists have them: colonists and slaves.
+        public static bool IsColonyPerson(string role)
+        {
+            return role == "colonist" || role == "slave";
+        }
+
+        // The filter colonist(s) returns the colony's people, slaves included, as it did while the
+        // game's lists classed slaves as colonists; the row's role tells them apart. slave(s) is
+        // slaves only.
+        public static bool MatchesFilter(string normalized, string role)
+        {
+            string roleKey = role.ToLowerInvariant();
+            return normalized == "all" ||
+                normalized == "core" && IsCoreRole(role) ||
+                (normalized == "colonist" || normalized == "colonists") && IsColonyPerson(role) ||
+                normalized == roleKey ||
+                normalized == roleKey + "s" ||
+                normalized == "animals" && role == "colonyAnimal" ||
+                normalized == "wildlife" && role == "wildAnimal" ||
+                normalized == "threats" && role == "hostile";
         }
 
         public static bool IsCoreRole(string role)

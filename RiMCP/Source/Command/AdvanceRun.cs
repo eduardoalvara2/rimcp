@@ -622,7 +622,7 @@ namespace RiMCP.Command
                 pawns.AddRange(map.mapPawns.FreeColonistsSpawned);
                 // Colonists another pawn carries, such as one being rescued or kidnapped, are not
                 // spawned while carried, and are still watched.
-                pawns.AddRange(PawnReadService.CarriedPawns(map.mapPawns.AllPawnsSpawned).Where(pawn => PawnReadService.RoleForPawn(map, pawn) == "colonist"));
+                pawns.AddRange(PawnReadService.CarriedPawns(map.mapPawns.AllPawnsSpawned).Where(pawn => PawnReadService.IsColonyPerson(PawnReadService.RoleForPawn(map, pawn))));
                 IAttackTarget threat;
                 if (observation.Threat == null && GenHostility.AnyHostileActiveThreatTo(map, Faction.OfPlayer, out threat))
                 {

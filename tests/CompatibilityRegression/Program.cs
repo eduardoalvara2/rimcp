@@ -2686,10 +2686,11 @@ internal static class Program
         Check(!(bool)Invoke(type, "Applies", true, false, false, false, false, false, false), "a standing visitor with no host has none");
 
         // JoinAfterRescue(humanlike, prisoner, leftAfterRescue, factionAllows, unsafeWeather)
-        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, true, false) == "chance", "a pawn with no faction joins after a rescue by a 50% roll");
-        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, true, true) == "certain", "unsafe weather makes the roll certain");
-        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, false, true) == "never", "a faction without rescueesCanJoin never lets its pawn join, whatever the weather");
-        Check((string)Invoke(type, "JoinAfterRescue", true, false, true, true, false) == "never" && (string)Invoke(type, "JoinAfterRescue", true, true, false, true, false) == "never" && (string)Invoke(type, "JoinAfterRescue", false, false, false, true, false) == "never", "one who left after a rescue, a prisoner and a non-humanlike never join");
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, false, true, false) == "chance", "a pawn with no faction joins after a rescue by a 50% roll");
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, false, true, true) == "certain", "unsafe weather makes the roll certain");
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, false, false, true) == "never", "a faction without rescueesCanJoin never lets its pawn join, whatever the weather");
+        Check((string)Invoke(type, "JoinAfterRescue", true, false, false, true, true, false) == "never" && (string)Invoke(type, "JoinAfterRescue", true, false, true, false, true, false) == "never" && (string)Invoke(type, "JoinAfterRescue", false, false, false, false, true, false) == "never", "one who left after a rescue, a prisoner and a non-humanlike never join");
+        Check((string)Invoke(type, "JoinAfterRescue", true, true, false, false, true, true) == "never", "a factionless baby never joins after a rescue, even in unsafe weather");
         Check((string)Invoke(type, "JoinOption", true, false) == "offerHelp" && (string)Invoke(type, "JoinOption", true, true) == "freePrisoner" && Invoke(type, "JoinOption", false, false) == null, "the float menu says Offer help, or Free prisoner for a held pawn, only when the pawn would join");
         Check((bool)Invoke(type, "CaptureOffered", true, false, true, true) && !(bool)Invoke(type, "CaptureOffered", true, true, true, true) && !(bool)Invoke(type, "CaptureOffered", false, false, true, true) && !(bool)Invoke(type, "CaptureOffered", true, false, false, true) && !(bool)Invoke(type, "CaptureOffered", true, false, true, false), "capture is offered for a downed pawn the game lets one capture who is not our prisoner already");
         Check(Invoke(type, "Of", new Pawn(), "prisoner") == null, "a pawn without a guest tracker has none");
@@ -2700,12 +2701,17 @@ internal static class Program
         Check((string)Invoke(service, "Classify", false, false, true, false, false, true, false) == "colonist" && (string)Invoke(service, "Classify", true, true, true, false, false, true, false) == "hostile", "colonists are colonists and a hostile slave is hostile");
         Check((string)Invoke(service, "Classify", false, false, false, true, false, false, true) == "prisoner" && (string)Invoke(service, "Classify", false, false, false, false, false, false, true) == "guest" && (string)Invoke(service, "Classify", false, false, false, false, true, true, false) == "colonyAnimal", "prisoners, visitors and colony animals keep their roles");
 
+        Check((bool)Invoke(service, "IsColonyPerson", "colonist") && (bool)Invoke(service, "IsColonyPerson", "slave") && !(bool)Invoke(service, "IsColonyPerson", "prisoner") && !(bool)Invoke(service, "IsColonyPerson", "hostile"), "the advance watch counts colonists and slaves, including carried ones, and not prisoners or hostiles");
+        Check((bool)Invoke(service, "MatchesFilter", "colonists", "slave") && (bool)Invoke(service, "MatchesFilter", "colonist", "slave") && (bool)Invoke(service, "MatchesFilter", "colonists", "colonist"), "filter colonists returns the colony's people, slaves included");
+        Check((bool)Invoke(service, "MatchesFilter", "slaves", "slave") && !(bool)Invoke(service, "MatchesFilter", "slaves", "colonist") && !(bool)Invoke(service, "MatchesFilter", "colonists", "prisoner") && (bool)Invoke(service, "MatchesFilter", "core", "slave"), "filter slaves returns slaves only, colonists leave out prisoners, core keeps slaves");
+
         string pawn = Field<string>(Tool("get_pawn"), "Description");
         foreach (string term in new[] { "`willJoinIfRescued`", "`joinAfterRescue`", "`joinOption`", "`captureOffered`", "`recruitState`", "`recruitAttemptsOn`", "`resistance`", "`slaveInteractionMode`", "`suppression`", "rescueesCanJoin", "Offer help", "no recruit chance", "twice a day", "Attempt to recruit" })
         {
             Check(pawn.Contains(term), "get_pawn documents " + term);
         }
-        Check(Field<string>(Tool("list_pawns"), "Description").Contains("`guest` object"), "list_pawns says it carries the guest object");
+        Check(Field<string>(Tool("list_pawns"), "Description").Contains("`guest` object") && Field<string>(Tool("list_pawns"), "Description").Contains("slaves included"), "list_pawns says it carries the guest object and that colonists include slaves");
+        Check(pawn.Contains("now") && pawn.Contains("A baby never joins"), "get_pawn says certain is the weather now and that a baby never joins");
     }
 
     private static int Free(bool humanlike, float maxBody, bool deathrest, string ownerType, bool inCell, bool medical, int slots, int owners, int occupants)

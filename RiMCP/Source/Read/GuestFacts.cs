@@ -67,10 +67,12 @@ namespace RiMCP.Read
         // Ancients), they are no prisoner and have not already left after a rescue; then the game
         // rolls a die seeded by the pawn, 50%, or 100% when the weather is unsafe for them (outdoor
         // temperature outside their safe range, toxic fallout or noxious haze). The roll itself is
-        // not read: certain says the weather makes it 100%, chance that it is 50%.
-        public static string JoinAfterRescue(bool humanlike, bool prisoner, bool leftAfterRescue, bool factionAllows, bool unsafeWeather)
+        // not read: certain says the weather makes it 100% as it is now (the roll happens when the
+        // pawn recovers, so it can change), chance that it is 50%. A baby never joins this way: the
+        // rescue job does not make a baby a guest, and a baby never stops being downed.
+        public static string JoinAfterRescue(bool humanlike, bool baby, bool prisoner, bool leftAfterRescue, bool factionAllows, bool unsafeWeather)
         {
-            if (!humanlike || prisoner || leftAfterRescue || !factionAllows)
+            if (!humanlike || baby || prisoner || leftAfterRescue || !factionAllows)
             {
                 return "never";
             }
@@ -120,7 +122,7 @@ namespace RiMCP.Read
                 Dto.Field("downed", pawn.Downed),
                 Dto.Field("willJoinIfRescued", willJoin),
                 Dto.Field("joinOption", JoinOption(willJoin, pawn.IsPrisoner)),
-                Dto.Field("joinAfterRescue", JoinAfterRescue(true, pawn.IsPrisoner, guest.leftAfterRescue, FactionAllowsJoin(pawn), UnsafeWeather(pawn))),
+                Dto.Field("joinAfterRescue", JoinAfterRescue(true, pawn.DevelopmentalStage == DevelopmentalStage.Baby, pawn.IsPrisoner, guest.leftAfterRescue, FactionAllowsJoin(pawn), UnsafeWeather(pawn))),
                 Dto.Field("canBeCaptured", canBeCaptured),
                 Dto.Field("captureOffered", pawn.Spawned && CaptureOffered(pawn.Downed, pawn.IsPrisonerOfColony, canBeCaptured, HealthAIUtility.WantsToBeRescued(pawn))),
                 Dto.Field("recruitable", recruitable));
