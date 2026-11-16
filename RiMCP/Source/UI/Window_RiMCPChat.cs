@@ -86,7 +86,26 @@ namespace RiMCP.UI
         public override void WindowUpdate()
         {
             base.WindowUpdate();
+            // A click on the map never reaches DoWindowContents, so a click outside the window drops
+            // the focus here; otherwise the field keeps it and the camera stays frozen.
+            if (Input.GetMouseButtonDown(0) && !windowRect.Contains(Verse.UI.MousePositionOnUIInverted))
+            {
+                ReleaseFocus();
+            }
             preventCameraMotion = GUI.GetNameOfFocusedControl() == InputName;
+        }
+
+        public override void PreClose()
+        {
+            base.PreClose();
+            ReleaseFocus();
+            preventCameraMotion = false;
+        }
+
+        private static void ReleaseFocus()
+        {
+            GUI.FocusControl(null);
+            GUIUtility.keyboardControl = 0;
         }
 
         public override void DoWindowContents(Rect inRect)
@@ -110,6 +129,11 @@ namespace RiMCP.UI
 
             // While the box has focus the game must not read keys as hotkeys or camera movement.
             Event current = Event.current;
+            // A click inside the window but outside the field also drops the focus.
+            if (current.type == EventType.MouseDown && !inputRect.Contains(current.mousePosition))
+            {
+                ReleaseFocus();
+            }
             bool inputFocused = GUI.GetNameOfFocusedControl() == InputName;
             preventCameraMotion = inputFocused;
             // Enter is taken before the text area sees it, so it sends instead of adding a line. The
