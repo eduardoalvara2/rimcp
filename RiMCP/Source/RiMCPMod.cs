@@ -496,6 +496,10 @@ namespace RiMCP
             listing.Label("Shows whether agents are on and working; click it to pause them or change the access level.");
             GUI.color = Color.white;
             listing.Gap();
+            listing.Label("Chat names (the in-game chat window and its bottom bar button):");
+            Settings.AssistantName = listing.TextEntryLabeled("Assistant name", Settings.AssistantName ?? "");
+            Settings.PlayerName = listing.TextEntryLabeled("Player name", Settings.PlayerName ?? "");
+            listing.Gap();
             GUI.color = Color.gray;
             listing.Label("During a Multiplayer session, agents can read but never change the game or control time.");
             GUI.color = Color.white;

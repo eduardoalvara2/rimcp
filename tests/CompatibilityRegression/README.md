@@ -44,6 +44,9 @@ The ninety-four checks cover:
   than the archive keeps, one culled before the watch saw it, flag a gap for a reader caught
   up before them (and only because of the unseen one); and a reader caught up after them is
   not told again while nothing changes.
+- The chat tools: `send_message` and `get_chat` on their routes in the Observe group with their handlers, ids counting
+  up, blank, missing and oversized text refused, entries after an id, a wait that returns at once for a player entry already
+  there and otherwise ends only when the player (not the assistant) writes, and the log keeping the newest 300 entries.
 - Dialog answers on a scripted dialog: a new page for each question with numbers never
   reused, an answer naming an earlier page refused on a later one with the same buttons,
   changed, disabled, counting-down and covered options refused before anything is chosen,

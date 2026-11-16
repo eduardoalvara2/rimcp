@@ -19,6 +19,12 @@ namespace RiMCP.Settings
         public List<string> ToolsOff = new List<string>();
         // The RimMCP button on the play screen's bottom bar.
         public bool ShowQuickControl = true;
+        // What the chat calls the assistant and the player: the bottom bar button, the window title, the
+        // history labels and the letter title. A blank name falls back to the default.
+        public const string DefaultAssistantName = "Nyx";
+        public const string DefaultPlayerName = "You";
+        public string AssistantName = DefaultAssistantName;
+        public string PlayerName = DefaultPlayerName;
         public int Port = 39571;
         public string Token;
         // Agents answer the game's questions during new-game setup and start the colony without the
@@ -48,12 +54,24 @@ namespace RiMCP.Settings
             {
                 Scribe_Values.Look(ref legacyAllowChanges, "allowColonyChanges", true);
             }
+            Scribe_Values.Look(ref AssistantName, "assistantName", DefaultAssistantName);
+            Scribe_Values.Look(ref PlayerName, "playerName", DefaultPlayerName);
             Scribe_Values.Look(ref Port, "port", 39571);
             Scribe_Values.Look(ref Token, "token");
             Scribe_Values.Look(ref UnattendedSetup, "unattendedSetup", false);
             Scribe_Values.Look(ref AllowModActions, "allowModActions", true);
             Scribe_Values.Look(ref TestIncidentWorld, "testIncidentWorld", 0);
             Scribe_Values.Look(ref TestIncidentColonyName, "testIncidentColonyName");
+        }
+
+        public string AssistantLabel
+        {
+            get { return string.IsNullOrWhiteSpace(AssistantName) ? DefaultAssistantName : AssistantName.Trim(); }
+        }
+
+        public string PlayerLabel
+        {
+            get { return string.IsNullOrWhiteSpace(PlayerName) ? DefaultPlayerName : PlayerName.Trim(); }
         }
 
         internal string[] EnabledGroups

@@ -34,8 +34,8 @@
       Condition="!$([System.String]::Copy('%(_RimWorldReferenceAssembly.Version)').StartsWith('1.6.'))"
       Text="Build references must be from RimWorld 1.6 to preserve 1.6/1.7 compatibility; found Assembly-CSharp %(_RimWorldReferenceAssembly.Version). RimWorld 1.7 uses .NET 10 and UnityStubs and cannot be used as net472 build references. Use a retained 1.6 Data/Managed directory. See README.md." />
     <Error
-      Condition="!Exists('$(RimWorldManagedPath)/UnityEngine.CoreModule.dll') Or !Exists('$(RimWorldManagedPath)/UnityEngine.IMGUIModule.dll')"
-      Text="RimWorldManagedPath must also contain the 1.6 UnityEngine.CoreModule.dll and UnityEngine.IMGUIModule.dll from the same installation: $(RimWorldManagedPath)" />
+      Condition="!Exists('$(RimWorldManagedPath)/UnityEngine.CoreModule.dll') Or !Exists('$(RimWorldManagedPath)/UnityEngine.IMGUIModule.dll') Or !Exists('$(RimWorldManagedPath)/UnityEngine.TextRenderingModule.dll') Or !Exists('$(RimWorldManagedPath)/UnityEngine.InputLegacyModule.dll')"
+      Text="RimWorldManagedPath must also contain the 1.6 UnityEngine.CoreModule.dll, UnityEngine.IMGUIModule.dll, UnityEngine.TextRenderingModule.dll and UnityEngine.InputLegacyModule.dll from the same installation: $(RimWorldManagedPath)" />
   </Target>
 
   <ItemGroup>
@@ -51,6 +51,14 @@
     </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>$(RimWorldManagedPath)/UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(RimWorldManagedPath)/UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(RimWorldManagedPath)/UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

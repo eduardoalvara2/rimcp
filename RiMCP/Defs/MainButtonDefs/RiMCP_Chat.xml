@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Defs>
+  <MainButtonDef>
+    <defName>RiMCP_Chat</defName>
+    <label>Nyx</label>
+    <description>Chat with an AI assistant connected through RimMCP.</description>
+    <workerClass>RiMCP.UI.MainButtonWorker_RiMCPChat</workerClass>
+    <order>496</order>
+    <validWithoutMap>false</validWithoutMap>
+    <minimized>false</minimized>
+  </MainButtonDef>
+</Defs>
