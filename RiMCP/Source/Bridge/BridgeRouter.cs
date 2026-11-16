@@ -114,7 +114,7 @@ namespace RiMCP.Bridge
 
         // While RimWorld loads, saves, or changes games, the game may be half built, so only these
         // answer: they read the operation registry, not the game.
-        private static readonly HashSet<string> AnswerWhileBusy = new HashSet<string> { "get-operation", "cancel-operation", "tools" };
+        private static readonly HashSet<string> AnswerWhileBusy = new HashSet<string> { "get-operation", "cancel-operation", "tools", "chat" };
 
         // While an operation holds the game unchanged (between a save and the leave or load after
         // it), changes are refused, except stopping or answering that operation.

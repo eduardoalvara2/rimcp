@@ -65,29 +65,43 @@ namespace RiMCP.Chat
             }
             // The bridge waits off the main thread, so the game keeps running, then asks for the
             // reply again: it holds whatever arrived meanwhile.
+            // A waiter nobody releases (the client left) is purged once it expires, by the next Wait or Add.
             ChatWaiter waiter = ChatLog.Wait(after, wait);
-            BridgeResponse response = Reply(after);
-            if (!waiter.Done.IsSet)
+            bool deferred = false;
+            try
             {
-                response.Deferred = new DeferredReply(waiter.Done, wait, () =>
+                BridgeResponse response = Reply(after);
+                if (!waiter.Done.IsSet)
+                {
+                    response.Deferred = new DeferredReply(waiter.Done, wait, () =>
+                    {
+                        ChatLog.Release(waiter);
+                        return Reply(after);
+                    });
+                    deferred = true;
+                }
+                return response;
+            }
+            finally
+            {
+                if (!deferred)
                 {
                     ChatLog.Release(waiter);
-                    return Reply(after);
-                });
+                }
             }
-            else
-            {
-                ChatLog.Release(waiter);
-            }
-            return response;
         }
 
         private static BridgeResponse Reply(int after)
         {
             ReadContext context = new ReadContext(new ReadRequest(), null);
+            int last;
+            bool reset;
+            ChatEntry[] entries = ChatLog.Read(after, out last, out reset);
             return ReadEnvelope.Ok(context, Dto.Obj(
-                Dto.Field("messages", ChatLog.After(after).Select(entry => (object)entry.ToDto()).ToArray()),
-                Dto.Field("lastId", ChatLog.LastId)));
+                Dto.Field("messages", entries.Select(entry => (object)entry.ToDto()).ToArray()),
+                Dto.Field("lastId", last),
+                Dto.Field("logId", ChatLog.LogId),
+                Dto.Field("reset", reset)));
         }
 
         // The toast is a glance; the chat window and the letter keep the whole text.

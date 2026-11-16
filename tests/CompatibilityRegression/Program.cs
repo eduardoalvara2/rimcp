@@ -1363,7 +1363,17 @@ internal static class Program
             Check(messages.Count == 4 && (int)all["lastId"] == 4, "the whole chat is returned from after=0");
             Check((string)messages[2]["text"] == "hello\nworld" && (string)messages[2]["from"] == "assistant" && !messages[2].ContainsKey("tick"), "a message keeps its text whole, trimmed, and has no tick without a game");
             Check(Regex.IsMatch((string)messages[2]["at"], @"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$"), "at is a UTC ISO time: " + messages[2]["at"]);
+            string logId = (string)all["logId"];
+            Check(Regex.IsMatch(logId, "^[0-9a-f]{32}$") && !(bool)all["reset"], "get_chat names the log and does not reset a fresh cursor: " + logId);
             Dictionary<string, object> later = read("/v1/chat/messages?after=3");
+            Check((string)later["logId"] == logId && !(bool)later["reset"], "the log id is stable and after=lastId is not a reset");
+            Dictionary<string, object> stale = read("/v1/chat/messages?after=99");
+            Check((bool)stale["reset"] && ((IEnumerable)stale["messages"]).Cast<object>().Count() == 4 && (int)stale["lastId"] == 4 && (string)stale["logId"] == logId, "a cursor past lastId returns the whole log with reset");
+            Check(Field<object>(Invoke(Service, "GetChat", Request("/v1/chat/messages?after=99&waitSeconds=5"), Route()), "Deferred") == null, "a stale cursor does not wait");
+            string chatDescription = Field<string>(Tool("get_chat"), "Description");
+            Check(chatDescription.Contains("logId") && chatDescription.Contains("reset"), "the manifest describes logId and reset");
+            HashSet<string> busy = (HashSet<string>)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("AnswerWhileBusy", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+            Check(busy.Contains("chat") && !busy.Contains("send-message"), "get_chat answers while the game loads or saves; send_message stays gated");
             Check(((IEnumerable)later["messages"]).Cast<object>().Count() == 1 && (int)later["lastId"] == 4, "only entries after the id are returned");
             ExpectBridgeError(400, () => Invoke(Service, "GetChat", Request("/v1/chat/messages?waitSeconds=51"), Route()));
             ExpectBridgeError(400, () => Invoke(Service, "GetChat", Request("/v1/chat/messages?after=-1"), Route()));

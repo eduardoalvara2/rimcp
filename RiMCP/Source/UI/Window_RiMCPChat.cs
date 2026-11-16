@@ -28,6 +28,9 @@ namespace RiMCP.UI
         private string input = "";
         private int shownId = -1;
         private bool focused;
+        // Row heights by entry id; entries never change, so a height only changes with the text width.
+        private readonly Dictionary<int, float> heightCache = new Dictionary<int, float>();
+        private float cachedTextWidth = -1f;
 
         public Window_RiMCPChat()
         {
@@ -44,7 +47,7 @@ namespace RiMCP.UI
 
         public static bool HasUnread
         {
-            get { return ChatLog.LastId > seenId && System.Array.Exists(ChatLog.After(seenId), entry => entry.From == ChatSender.Assistant); }
+            get { return ChatLog.LastAssistantId() > seenId; }
         }
 
         public static void Toggle()
@@ -65,6 +68,15 @@ namespace RiMCP.UI
             get { return new Vector2(460f, 520f); }
         }
 
+        // The camera polls its movement keys (KeyBindingDef.IsDown reads Input.GetKey), so a consumed
+        // event cannot stop them; the window flag is the game's own switch for it (CameraDriver
+        // skips all camera input while any window sets it). Kept current here and in the GUI pass.
+        public override void WindowUpdate()
+        {
+            base.WindowUpdate();
+            preventCameraMotion = GUI.GetNameOfFocusedControl() == InputName;
+        }
+
         public override void DoWindowContents(Rect inRect)
         {
             seenId = ChatLog.LastId;
@@ -76,13 +88,23 @@ namespace RiMCP.UI
 
             DrawHistory(historyRect);
 
-            // Enter is taken before the text area sees it, so it sends instead of adding a line.
+            // While the box has focus the game must not read keys as hotkeys or camera movement.
             Event current = Event.current;
-            if (current.type == EventType.KeyDown && (current.keyCode == KeyCode.Return || current.keyCode == KeyCode.KeypadEnter)
-                && !current.shift && GUI.GetNameOfFocusedControl() == InputName)
+            bool inputFocused = GUI.GetNameOfFocusedControl() == InputName;
+            preventCameraMotion = inputFocused;
+            // Enter is taken before the text area sees it, so it sends instead of adding a line. The
+            // newline character Unity sends as its own event is eaten too, or it lands in the cleared box.
+            if (inputFocused && current.type == EventType.KeyDown && !current.shift)
             {
-                current.Use();
-                Send();
+                bool enterKey = current.keyCode == KeyCode.Return || current.keyCode == KeyCode.KeypadEnter;
+                if (enterKey || current.character == '\n' || current.character == '\r')
+                {
+                    current.Use();
+                    if (enterKey)
+                    {
+                        Send();
+                    }
+                }
             }
             GUI.SetNextControlName(InputName);
             input = Widgets.TextArea(inputRect, input);
@@ -130,12 +152,26 @@ namespace RiMCP.UI
                 return;
             }
 
-            List<float> heights = new List<float>(entries.Length);
-            float total = 0f;
-            foreach (ChatEntry entry in entries)
+            if (!Mathf.Approximately(textWidth, cachedTextWidth))
             {
-                float height = HeaderHeight + Text.CalcHeight(entry.Text, textWidth) + Pad;
-                heights.Add(height);
+                heightCache.Clear();
+                cachedTextWidth = textWidth;
+            }
+            if (heightCache.Count > ChatLog.MaxEntries * 2)
+            {
+                heightCache.Clear();
+            }
+            float[] heights = new float[entries.Length];
+            float total = 0f;
+            for (int i = 0; i < entries.Length; i++)
+            {
+                float height;
+                if (!heightCache.TryGetValue(entries[i].Id, out height))
+                {
+                    height = HeaderHeight + Text.CalcHeight(entries[i].Text, textWidth) + Pad;
+                    heightCache[entries[i].Id] = height;
+                }
+                heights[i] = height;
                 total += height + Gap;
             }
 
@@ -150,7 +186,11 @@ namespace RiMCP.UI
             float y = 0f;
             for (int i = 0; i < entries.Length; i++)
             {
-                DrawEntry(new Rect(0f, y, width, heights[i]), entries[i]);
+                // Only rows inside the scroll view are drawn.
+                if (y + heights[i] >= scroll.y && y <= scroll.y + inner.height)
+                {
+                    DrawEntry(new Rect(0f, y, width, heights[i]), entries[i]);
+                }
                 y += heights[i] + Gap;
             }
             Widgets.EndScrollView();

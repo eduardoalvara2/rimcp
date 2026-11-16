@@ -67,6 +67,9 @@ namespace RiMCP.Chat
         private static readonly List<ChatWaiter> Waiters = new List<ChatWaiter>();
         private static int lastId;
 
+        // Names this process's log. An id from another run (an agent's saved cursor) means nothing here.
+        public static readonly string LogId = Guid.NewGuid().ToString("N");
+
         public static int LastId
         {
             get
@@ -84,6 +87,8 @@ namespace RiMCP.Chat
             {
                 ChatEntry entry = new ChatEntry(++lastId, from, text, DateTime.UtcNow, tick);
                 Entries.Add(entry);
+                DateTime now = DateTime.UtcNow;
+                Waiters.RemoveAll(old => old.ExpiresUtc < now);
                 if (Entries.Count > MaxEntries)
                 {
                     Entries.RemoveRange(0, Entries.Count - MaxEntries);
@@ -99,11 +104,31 @@ namespace RiMCP.Chat
             }
         }
 
-        public static ChatEntry[] After(int id)
+        // What a reader holding cursor `after` should see, taken in one step. A cursor past the last id
+        // comes from a previous process: the whole log is returned and Reset is true.
+        public static ChatEntry[] Read(int after, out int last, out bool reset)
         {
             lock (Gate)
             {
-                return Entries.Where(entry => entry.Id > id).ToArray();
+                last = lastId;
+                reset = after > lastId;
+                return reset ? Entries.ToArray() : Entries.Where(entry => entry.Id > after).ToArray();
+            }
+        }
+
+        // The id of the newest assistant entry, 0 when there is none. Allocates nothing.
+        public static int LastAssistantId()
+        {
+            lock (Gate)
+            {
+                for (int i = Entries.Count - 1; i >= 0; i--)
+                {
+                    if (Entries[i].From == ChatSender.Assistant)
+                    {
+                        return Entries[i].Id;
+                    }
+                }
+                return 0;
             }
         }
 
@@ -125,7 +150,7 @@ namespace RiMCP.Chat
                 DateTime now = DateTime.UtcNow;
                 Waiters.RemoveAll(old => old.ExpiresUtc < now);
                 ChatWaiter waiter = new ChatWaiter(id, now.AddSeconds(seconds + 10));
-                if (Entries.Any(entry => entry.From == ChatSender.Player && entry.Id > id))
+                if (id > lastId || Entries.Any(entry => entry.From == ChatSender.Player && entry.Id > id))
                 {
                     waiter.Done.Set();
                 }
