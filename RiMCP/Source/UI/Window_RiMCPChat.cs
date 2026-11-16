@@ -102,7 +102,8 @@ namespace RiMCP.UI
         public override void PreClose()
         {
             base.PreClose();
-            ReleaseFocus();
+            if (GUI.GetNameOfFocusedControl() == InputName)
+                ReleaseFocus();
             releaseRequested = false;
             inputFocusedLast = false;
             preventCameraMotion = false;
