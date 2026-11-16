@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Serialization;
+using RiMCP.Chat;
 using RiMCP.Command;
 using RiMCP.Read;
 using RiMCP.Settings;
@@ -58,6 +59,8 @@ namespace RiMCP.Bridge
             { "ideoligion", IdeoligionReadService.GetIdeoligion },
             { "quests", QuestWorldReadService.ListQuests },
             { "events", EventReadService.GetEvents },
+            { "chat", ChatService.GetChat },
+            { "send-message", ChatService.SendMessage },
             { "answer-letter", DecisionCommandService.AnswerLetter },
             { "respond-to-quest", DecisionCommandService.RespondToQuest },
             { "answer-dialog", DecisionCommandService.AnswerDialog },

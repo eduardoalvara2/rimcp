@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- In-game chat with an agent. A **Claude** button in the bottom bar opens a chat window that does not pause the game and can be dragged and resized: a scrollable history (your lines and the assistant's lines in different colors, long text kept whole), a text box, and Send; Enter sends, Shift+Enter adds a line, and an empty message is ignored. A dot on the button shows an assistant message you have not seen.
+- `send_message` (`text`, up to 4000 characters, and `letter`, default false) adds an assistant line to the chat and shows it in game as a neutral game message, or with `letter` as a letter titled Claude. It returns `{id}`. It works at the main menu too, where it only joins the chat.
+- `get_chat` (`after`, default 0, and `waitSeconds`, 0 to 50) returns `{messages, lastId}`: the entries with an id above `after`, each with `id`, `from` (`player` or `assistant`), `text`, `at` (UTC ISO time), and `tick` (left out when no game is loaded). With `waitSeconds` it waits off the game's main thread until the player writes something new after `after`, or the time ends.
+- The chat log is in memory for the whole process, so it survives loading another save and is not written to the save file. It keeps the last 300 entries. Both tools are in the Observe group, so every access level has them and no dev mode or test setting is needed.
+- Building the mod now also references `UnityEngine.TextRenderingModule.dll` from the same 1.6 `Data/Managed` folder.
+- Not yet tried in game: the window, the button, and the letter and message display. The regression suite checks the tool declarations, the log's order and cap, validation, and a waiting `get_chat` returning when the player writes.
+
 ## 1.1.0+rimplayer.9 (rimplayer fork) - 2026-11-11
 
 ### Added

@@ -7,6 +7,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
@@ -229,12 +230,13 @@ internal static class Program
         {
             IEnumerable tools = (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null);
             Dictionary<string, int> counts = tools.Cast<object>().GroupBy(tool => Field<string>(tool, "Group") ?? "(none)").ToDictionary(group => group.Key, group => group.Count());
-            var expected = new Dictionary<string, int> { { "observe", 44 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 5 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
+            var expected = new Dictionary<string, int> { { "observe", 46 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 5 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
             int count;
             Check(counts.Count == expected.Count && expected.All(pair => counts.TryGetValue(pair.Key, out count) && count == pair.Value),
                 "group sizes: " + string.Join(", ", counts.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
         });
         Test("the dialog, surgery, and mechanitor tools reach their handlers on their routes and groups", CheckForkTools);
+        Test("the chat tools are declared and validated, the log keeps its order, and a waiting read returns when the player writes", CheckChat);
         Test("game dialogs are answered under dismiss_dialog's access, and dismiss_dialog closes only listed windows", CheckGameDialogs);
         Test("surgery and mech commands refuse bad input and a missing map before anything changes", CheckForkRefusals);
         Test("only windows the game opened on its own are the agents' to answer or close", CheckWindowClassification);
@@ -1302,6 +1304,94 @@ internal static class Program
         finally
         {
             Current.Game = null;
+        }
+    }
+
+    private static string BodyOf(object response)
+    {
+        return (string)response.GetType().GetField("Body").GetValue(response);
+    }
+
+    // The in-game chat: tools and routes, the log's order and cap, and a read that waits off the
+    // main thread for the player. No game is loaded, as at the main menu.
+    private static void CheckChat()
+    {
+        Type log = mod.GetType("RiMCP.Chat.ChatLog", true);
+        const string Service = "RiMCP.Chat.ChatService";
+        IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
+        var expected = new[]
+        {
+            new[] { "send_message", "send-message", "POST", "ChatService.SendMessage" },
+            new[] { "get_chat", "chat", "GET", "ChatService.GetChat" }
+        };
+        foreach (string[] row in expected)
+        {
+            object spec = Tool(row[0]);
+            Check(Field<string>(spec, "HandlerId") == row[1] && Field<string>(spec, "Group") == "observe" && Field<string>(spec, "Method") == row[2] && Field<string>(spec, "PathTemplate") == "/v1/chat/messages",
+                row[0] + " is on the chat route in observe, so it needs no dev mode or test setting");
+            Delegate handler = handlers[row[1]] as Delegate;
+            Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == row[3], row[0] + " must be handled by " + row[3]);
+        }
+        object send = Tool("send_message");
+        Check(Field<string[]>(send, "BodyKeys").SequenceEqual(new[] { "text", "letter" }), "send_message sends text and letter in the body, with no load guard");
+        Check(((string[])Field<Dictionary<string, object>>(send, "InputSchema")["required"]).SequenceEqual(new[] { "text" }), "text is the one required field");
+        Check((bool)Field<Dictionary<string, object>>(send, "Annotations")["readOnlyHint"] == false, "send_message is a command");
+        Check((bool)Field<Dictionary<string, object>>(Tool("get_chat"), "Annotations")["readOnlyHint"], "get_chat is a read");
+        Dictionary<string, object> wait = (Dictionary<string, object>)ToolProperties(Tool("get_chat"))["waitSeconds"];
+        Check((int)wait["minimum"] == 0 && (int)wait["maximum"] == 50, "waitSeconds runs from 0 to 50");
+
+        MethodInfo reset = log.GetMethod("Reset", BindingFlags.Static | BindingFlags.NonPublic);
+        reset.Invoke(null, null);
+        try
+        {
+            Func<string, string, object> add = (from, text) => log.GetMethod("Add", Static).Invoke(null, new object[] { from, text, null });
+            Func<object, int> idOf = entry => Field<int>(entry, "Id");
+            Func<string, Dictionary<string, object>> read = path => Data(Json.Deserialize<Dictionary<string, object>>(BodyOf(Invoke(Service, "GetChat", Request(path), Route()))));
+            Check(idOf(add("assistant", "one")) == 1 && idOf(add("player", "two")) == 2, "ids count up from 1");
+
+            // Without a game: the entry is kept, nothing is shown, and there is no tick.
+            object reply = Invoke(Service, "SendMessage", Request("/v1/chat/messages", "POST", "{\"text\":\"  hello\\nworld  \"}"), Route());
+            Dictionary<string, object> sent = Data(Json.Deserialize<Dictionary<string, object>>(BodyOf(reply)));
+            Check((int)sent["id"] == 3, "send_message returns the entry id: " + BodyOf(reply));
+            ExpectCommandError(400, () => Invoke(Service, "SendMessage", Request("/v1/chat/messages", "POST", "{\"text\":\"   \"}"), Route()));
+            ExpectCommandError(400, () => Invoke(Service, "SendMessage", Request("/v1/chat/messages", "POST", "{}"), Route()));
+            ExpectCommandError(400, () => Invoke(Service, "SendMessage", Request("/v1/chat/messages", "POST", "{\"text\":\"" + new string('x', 4001) + "\"}"), Route()));
+            Check(idOf(add("assistant", "after the refusals")) == 4, "a refused message takes no id");
+
+            Dictionary<string, object> all = read("/v1/chat/messages");
+            var messages = ((IEnumerable)all["messages"]).Cast<Dictionary<string, object>>().ToList();
+            Check(messages.Count == 4 && (int)all["lastId"] == 4, "the whole chat is returned from after=0");
+            Check((string)messages[2]["text"] == "hello\nworld" && (string)messages[2]["from"] == "assistant" && !messages[2].ContainsKey("tick"), "a message keeps its text whole, trimmed, and has no tick without a game");
+            Check(Regex.IsMatch((string)messages[2]["at"], @"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$"), "at is a UTC ISO time: " + messages[2]["at"]);
+            Dictionary<string, object> later = read("/v1/chat/messages?after=3");
+            Check(((IEnumerable)later["messages"]).Cast<object>().Count() == 1 && (int)later["lastId"] == 4, "only entries after the id are returned");
+            ExpectBridgeError(400, () => Invoke(Service, "GetChat", Request("/v1/chat/messages?waitSeconds=51"), Route()));
+            ExpectBridgeError(400, () => Invoke(Service, "GetChat", Request("/v1/chat/messages?after=-1"), Route()));
+
+            // A wait ends at once for a player entry already there, and otherwise waits for one.
+            Check(Field<object>(Invoke(Service, "GetChat", Request("/v1/chat/messages?after=0&waitSeconds=5"), Route()), "Deferred") == null, "a player entry after the id answers at once");
+            object waiting = Invoke(Service, "GetChat", Request("/v1/chat/messages?after=4&waitSeconds=5"), Route());
+            object deferred = Field<object>(waiting, "Deferred");
+            Check(deferred != null && Field<double>(deferred, "Seconds") == 5, "with no player entry after the id the reply is deferred");
+            var done = Field<System.Threading.ManualResetEventSlim>(deferred, "Done");
+            Check(!done.IsSet, "an assistant entry does not end the wait");
+            add("assistant", "still no player");
+            Check(!done.IsSet, "a later assistant entry does not end it either");
+            add("player", "here I am");
+            Check(done.IsSet, "a player entry ends the wait");
+            object finished = Field<Delegate>(deferred, "Reply").DynamicInvoke();
+            Dictionary<string, object> woke = Data(Json.Deserialize<Dictionary<string, object>>(BodyOf(finished)));
+            Check(((IEnumerable)woke["messages"]).Cast<Dictionary<string, object>>().Select(m => (string)m["text"]).SequenceEqual(new[] { "still no player", "here I am" }), "the rebuilt reply holds what arrived while waiting");
+
+            // The log keeps the newest few hundred, and ids keep counting.
+            for (int i = 0; i < 350; i++) add("assistant", "filler " + i);
+            Dictionary<string, object> capped = read("/v1/chat/messages");
+            var kept = ((IEnumerable)capped["messages"]).Cast<Dictionary<string, object>>().ToList();
+            Check(kept.Count == 300 && (int)kept[299]["id"] == (int)capped["lastId"] && (int)kept[0]["id"] == (int)capped["lastId"] - 299, "the log keeps the newest 300 entries by id");
+        }
+        finally
+        {
+            reset.Invoke(null, null);
         }
     }
 
