@@ -31,6 +31,10 @@ namespace RiMCP.UI
         private string input = "";
         private int shownId = -1;
         private bool focused;
+        // WindowUpdate runs outside OnGUI, where the IMGUI focus state is not reliable: focus is only
+        // read and released inside DoWindowContents, and WindowUpdate works from these two flags.
+        private bool inputFocusedLast;
+        private bool releaseRequested;
         // Row heights by entry id; entries never change, so a height only changes with the text width.
         private readonly Dictionary<int, float> heightCache = new Dictionary<int, float>();
         private float cachedTextWidth = -1f;
@@ -90,15 +94,17 @@ namespace RiMCP.UI
             // the focus here; otherwise the field keeps it and the camera stays frozen.
             if (Input.GetMouseButtonDown(0) && !windowRect.Contains(Verse.UI.MousePositionOnUIInverted))
             {
-                ReleaseFocus();
+                releaseRequested = true;
             }
-            preventCameraMotion = GUI.GetNameOfFocusedControl() == InputName;
+            preventCameraMotion = inputFocusedLast && !releaseRequested;
         }
 
         public override void PreClose()
         {
             base.PreClose();
             ReleaseFocus();
+            releaseRequested = false;
+            inputFocusedLast = false;
             preventCameraMotion = false;
         }
 
@@ -132,9 +138,23 @@ namespace RiMCP.UI
             // A click inside the window but outside the field also drops the focus.
             if (current.type == EventType.MouseDown && !inputRect.Contains(current.mousePosition))
             {
-                ReleaseFocus();
+                releaseRequested = true;
             }
             bool inputFocused = GUI.GetNameOfFocusedControl() == InputName;
+            if (releaseRequested)
+            {
+                // Keep releasing until the game reports the field unfocused.
+                if (inputFocused)
+                {
+                    ReleaseFocus();
+                }
+                else
+                {
+                    releaseRequested = false;
+                }
+                inputFocused = false;
+            }
+            inputFocusedLast = inputFocused;
             preventCameraMotion = inputFocused;
             // Enter is taken before the text area sees it, so it sends instead of adding a line. The
             // newline character Unity sends as its own event is eaten too, or it lands in the cleared box.
