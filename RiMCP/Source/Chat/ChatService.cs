@@ -5,6 +5,7 @@ using RimWorld;
 using RiMCP.Bridge;
 using RiMCP.Command;
 using RiMCP.Read;
+using RiMCP.Settings;
 using Verse;
 
 namespace RiMCP.Chat
@@ -15,7 +16,6 @@ namespace RiMCP.Chat
         public const int MaxTextLength = 4000;
         public const int MaxWaitSeconds = 50;
         private const int MaxToastLength = 200;
-        private const string LetterLabel = "Claude";
 
         public static BridgeResponse SendMessage(BridgeRequest request, RouteMatch route)
         {
@@ -36,7 +36,7 @@ namespace RiMCP.Chat
             {
                 if (body.Letter == true)
                 {
-                    Find.LetterStack.ReceiveLetter(LetterLabel, text, LetterDefOf.NeutralEvent);
+                    Find.LetterStack.ReceiveLetter(RiMCPMod.Settings == null ? RiMCPSettings.DefaultAssistantName : RiMCPMod.Settings.AssistantLabel, text, LetterDefOf.NeutralEvent);
                 }
                 else
                 {

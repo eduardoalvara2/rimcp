@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using RiMCP.Chat;
+using RiMCP.Settings;
 using UnityEngine;
 using Verse;
 
@@ -15,11 +16,13 @@ namespace RiMCP.UI
         private const float Gap = 6f;
         private const float Pad = 6f;
         private const float HeaderHeight = 20f;
+        private const float TitleHeight = 24f;
 
-        private static readonly Color PlayerFill = new Color(0.18f, 0.28f, 0.42f, 0.55f);
-        private static readonly Color AssistantFill = new Color(0.25f, 0.25f, 0.25f, 0.55f);
-        private static readonly Color PlayerName = new Color(0.55f, 0.75f, 1f);
-        private static readonly Color AssistantName = new Color(0.95f, 0.7f, 0.45f);
+        // Night palette: deep indigo for the assistant with a soft gold name, neutral slate for the player.
+        private static readonly Color PlayerFill = new Color(0.17f, 0.19f, 0.22f, 0.8f);
+        private static readonly Color AssistantFill = new Color(0.14f, 0.13f, 0.33f, 0.85f);
+        private static readonly Color PlayerName = new Color(0.72f, 0.76f, 0.82f);
+        private static readonly Color AssistantName = new Color(0.96f, 0.82f, 0.48f);
 
         // The newest entry the player has had in front of them; the bottom bar button shows a dot for newer ones.
         private static int seenId;
@@ -42,7 +45,16 @@ namespace RiMCP.UI
             closeOnAccept = false;
             closeOnClickedOutside = false;
             doCloseX = true;
-            optionalTitle = "Claude";
+        }
+
+        private static string AssistantLabel
+        {
+            get { return RiMCPMod.Settings == null ? RiMCPSettings.DefaultAssistantName : RiMCPMod.Settings.AssistantLabel; }
+        }
+
+        private static string PlayerLabel
+        {
+            get { return RiMCPMod.Settings == null ? RiMCPSettings.DefaultPlayerName : RiMCPMod.Settings.PlayerLabel; }
         }
 
         public static bool HasUnread
@@ -81,6 +93,14 @@ namespace RiMCP.UI
         {
             seenId = ChatLog.LastId;
             Text.Font = GameFont.Small;
+
+            // Own title row (icon + name) instead of the window's plain-text title.
+            Rect titleRow = new Rect(inRect.x, inRect.y, inRect.width - 30f, TitleHeight);
+            ChatIcon.Draw(new Rect(titleRow.x, titleRow.y + 1f, 20f, 20f));
+            GUI.color = AssistantName;
+            Widgets.Label(new Rect(titleRow.x + 24f, titleRow.y, titleRow.width - 24f, TitleHeight), AssistantLabel);
+            GUI.color = Color.white;
+            inRect.yMin += TitleHeight + Gap;
 
             Rect inputRect = new Rect(inRect.x, inRect.yMax - InputHeight, inRect.width - SendWidth - Gap, InputHeight);
             Rect sendRect = new Rect(inputRect.xMax + Gap, inRect.yMax - InputHeight, SendWidth, InputHeight);
@@ -202,7 +222,7 @@ namespace RiMCP.UI
             Widgets.DrawBoxSolid(rect, player ? PlayerFill : AssistantFill);
             Rect header = new Rect(rect.x + Pad, rect.y + 2f, rect.width - Pad * 2f, HeaderHeight);
             GUI.color = player ? PlayerName : AssistantName;
-            Widgets.Label(header, player ? "You" : "Claude");
+            Widgets.Label(header, player ? PlayerLabel : AssistantLabel);
             GUI.color = Color.white;
             Rect body = new Rect(rect.x + Pad, rect.y + HeaderHeight, rect.width - Pad * 2f, rect.height - HeaderHeight);
             Widgets.Label(body, entry.Text);

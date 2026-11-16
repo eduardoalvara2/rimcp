@@ -2,7 +2,7 @@
 <Defs>
   <MainButtonDef>
     <defName>RiMCP_Chat</defName>
-    <label>Claude</label>
+    <label>Nyx</label>
     <description>Chat with an AI assistant connected through RimMCP.</description>
     <workerClass>RiMCP.UI.MainButtonWorker_RiMCPChat</workerClass>
     <order>496</order>
