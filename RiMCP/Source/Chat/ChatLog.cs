@@ -66,6 +66,10 @@ namespace RiMCP.Chat
         private static readonly List<ChatEntry> Entries = new List<ChatEntry>();
         private static readonly List<ChatWaiter> Waiters = new List<ChatWaiter>();
         private static int lastId;
+        // The newest player entry a waiting reader was handed, and when: the window shows the
+        // assistant thinking about it until an assistant entry follows.
+        private static int deliveredId;
+        private static DateTime deliveredAtUtc;
 
         // Names this process's log. An id from another run (an agent's saved cursor) means nothing here.
         public static readonly string LogId = Guid.NewGuid().ToString("N");
@@ -132,6 +136,49 @@ namespace RiMCP.Chat
             }
         }
 
+        // The player's newest entry when no assistant entry follows it, else 0. Allocates nothing.
+        public static int PendingPlayerId()
+        {
+            lock (Gate)
+            {
+                for (int i = Entries.Count - 1; i >= 0; i--)
+                {
+                    if (Entries[i].From == ChatSender.Assistant)
+                    {
+                        return 0;
+                    }
+                    if (Entries[i].From == ChatSender.Player)
+                    {
+                        return Entries[i].Id;
+                    }
+                }
+                return 0;
+            }
+        }
+
+        // Records that a reader took the player entries up to id.
+        public static void MarkDelivered(int id)
+        {
+            lock (Gate)
+            {
+                if (id > deliveredId)
+                {
+                    deliveredId = id;
+                    deliveredAtUtc = DateTime.UtcNow;
+                }
+            }
+        }
+
+        // True when a reader took the player entry id; atUtc is when the newest delivery happened.
+        public static bool IsDelivered(int id, out DateTime atUtc)
+        {
+            lock (Gate)
+            {
+                atUtc = deliveredAtUtc;
+                return id > 0 && deliveredId >= id;
+            }
+        }
+
         // The newest entries, oldest first, for the window.
         public static ChatEntry[] Snapshot()
         {
@@ -182,6 +229,8 @@ namespace RiMCP.Chat
                 }
                 Waiters.Clear();
                 lastId = 0;
+                deliveredId = 0;
+                deliveredAtUtc = default(DateTime);
             }
         }
     }

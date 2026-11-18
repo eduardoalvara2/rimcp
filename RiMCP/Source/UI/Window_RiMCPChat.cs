@@ -17,6 +17,14 @@ namespace RiMCP.UI
         private const float Pad = 6f;
         private const float HeaderHeight = 20f;
         private const float TitleHeight = 24f;
+        private const float StatusWidth = 110f;
+        // A delivered message older than this with no answer stops animating: the agent may be gone.
+        private const double ThinkingMinutes = 15d;
+        private static readonly Color StatusGray = new Color(0.5f, 0.52f, 0.58f);
+        private static readonly Color StarGold = new Color(1f, 0.88f, 0.55f);
+        private const string Star = "✦";
+        private const int Stars = 3;
+        private const float StarWidth = 16f;
 
         // Night palette: deep indigo for the assistant with a soft gold name, neutral slate for the player.
         private static readonly Color PlayerFill = new Color(0.17f, 0.19f, 0.22f, 0.8f);
@@ -126,6 +134,7 @@ namespace RiMCP.UI
             GUI.color = AssistantName;
             Widgets.Label(new Rect(titleRow.x + 24f, titleRow.y, titleRow.width - 24f, TitleHeight), AssistantLabel);
             GUI.color = Color.white;
+            DrawStatus(new Rect(titleRow.xMax - StatusWidth, titleRow.y, StatusWidth, TitleHeight));
             inRect.yMin += TitleHeight + Gap;
 
             Rect inputRect = new Rect(inRect.x, inRect.yMax - InputHeight, inRect.width - SendWidth - Gap, InputHeight);
@@ -199,6 +208,52 @@ namespace RiMCP.UI
             ChatLog.Add(ChatSender.Player, text, tick);
             input = "";
             GUI.FocusControl(InputName);
+        }
+
+        // Top right of the title row, while the player's last message has no answer: "sent" until the
+        // agent takes it, then a pulsing crescent and an animated "thinking" until its answer arrives.
+        private static void DrawStatus(Rect rect)
+        {
+            int pending = ChatLog.PendingPlayerId();
+            if (pending == 0)
+            {
+                return;
+            }
+            System.DateTime deliveredAt;
+            bool delivered = ChatLog.IsDelivered(pending, out deliveredAt);
+            bool thinking = delivered && (System.DateTime.UtcNow - deliveredAt).TotalMinutes < ThinkingMinutes;
+            Text.Font = GameFont.Small;
+            Text.Anchor = TextAnchor.MiddleCenter;
+            float right = rect.xMax;
+            if (thinking)
+            {
+                // A breathing crescent and three stars twinkling in a wave, bobbing a little.
+                float t = Time.realtimeSinceStartup;
+                for (int i = Stars - 1; i >= 0; i--)
+                {
+                    float phase = t * 3.2f - i * 0.9f;
+                    float glow = Mathf.Max(0f, Mathf.Sin(phase));
+                    Color star = Color.Lerp(AssistantFill, StarGold, 0.25f + 0.75f * glow);
+                    GUI.color = star;
+                    float bob = -2.5f * glow;
+                    Widgets.Label(new Rect(right - StarWidth * (Stars - i), rect.y + bob, StarWidth, rect.height), Star);
+                }
+                Color moon = AssistantName;
+                moon.a = 0.6f + 0.4f * (0.5f + 0.5f * Mathf.Sin(t * 1.6f));
+                GUI.color = moon;
+                ChatIcon.Draw(new Rect(right - StarWidth * Stars - 22f, rect.y + 2f, 20f, 20f));
+                TooltipHandler.TipRegion(rect, AssistantLabel + " is thinking...");
+            }
+            else
+            {
+                // One quiet star: gray while nobody has taken the message, soft gold once seen.
+                GUI.color = delivered ? new Color(StarGold.r, StarGold.g, StarGold.b, 0.5f) : StatusGray;
+                Widgets.Label(new Rect(right - StarWidth, rect.y, StarWidth, rect.height), Star);
+                TooltipHandler.TipRegion(rect, delivered ? AssistantLabel + " has seen your message." : "Sent. " + AssistantLabel + " has not picked it up yet.");
+            }
+            GUI.color = Color.white;
+            Text.Anchor = TextAnchor.UpperLeft;
+            Text.Font = GameFont.Small;
         }
 
         private void DrawHistory(Rect rect)
