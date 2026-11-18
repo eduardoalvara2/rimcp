@@ -238,6 +238,7 @@ internal static class Program
         Test("the dialog, surgery, and mechanitor tools reach their handlers on their routes and groups", CheckForkTools);
         Test("the chat tools are declared and validated, the log keeps its order, and a waiting read returns when the player writes", CheckChat);
         Test("prepare_gravship_launch is declared and validated, finds what it reads in the game, and never reaches the window's Begin", CheckGravshipLaunch);
+        Test("the launch window is the player's to begin, and list_gizmos and list_dialogs say so", CheckGravshipLaunchListings);
         Test("game dialogs are answered under dismiss_dialog's access, and dismiss_dialog closes only listed windows", CheckGameDialogs);
         Test("surgery and mech commands refuse bad input and a missing map before anything changes", CheckForkRefusals);
         Test("only windows the game opened on its own are the agents' to answer or close", CheckWindowClassification);
@@ -3061,6 +3062,30 @@ internal static class Program
             }
             at += size;
         }
+    }
+
+    // The launch window is the player's to begin: list_gizmos refuses its button for use_gizmo and
+    // names the tool to use, and list_dialogs lists an open one as the player's, never dismissable.
+    private static void CheckGravshipLaunchListings()
+    {
+        Type window = mod.GetType("RiMCP.Command.GravshipLaunchWindow", true);
+        // A Command_Ritual cannot be made without the game (its textures load with the type), so the judgment on
+        // the ritual a button begins is checked, and that a plain button gets none.
+        Func<Precept_Ritual, string> buttonReason = ritual => (string)window.GetMethod("LaunchReason", Static).Invoke(null, new object[] { ritual });
+        string reason = buttonReason((Precept_Ritual)FormatterServices.GetUninitializedObject(typeof(Precept_GravshipLaunch)));
+        Check(reason != null && reason.Contains("prepare_gravship_launch") && reason.Contains("player"), "the Launch... button is refused for use_gizmo, naming the tool that opens the window: " + reason);
+        Check(buttonReason((Precept_Ritual)FormatterServices.GetUninitializedObject(typeof(Precept_Ritual))) == null && window.GetMethod("ButtonReason", Static).Invoke(null, new object[] { new Command_Action() }) == null, "another ritual's button and a plain button are judged as before");
+        Check(window.GetMethod("Read", Static).Invoke(null, new object[] { Blank<Dialog_NodeTree>() }) == null, "a window that is not the launch window is described as before");
+
+        Type service = mod.GetType("RiMCP.Command.DialogService", true);
+        Dialog_BeginGravshipLaunch open = Blank<Dialog_BeginGravshipLaunch>();
+        open.forcePause = true;
+        Window[] none = new Window[0];
+        string player = (string)service.GetMethod("PlayerOnly", Static).Invoke(null, new object[] { open, none });
+        Check(player != null && player.Contains("Dialog_BeginGravshipLaunch"), "an open launch window is the player's, whoever opened it: " + player);
+        string refusal = (string)service.GetMethod("DismissRefusal", Static).Invoke(null, new object[] { open, none });
+        Check(refusal != null && refusal.Contains("player's to finish"), "dismiss_dialog never closes it: " + refusal);
+        Check(Field<string>(Tool("list_dialogs"), "Description").Contains("prepare_gravship_launch"), "list_dialogs' description says it describes the launch window");
     }
 
     private static object Tool(string name)

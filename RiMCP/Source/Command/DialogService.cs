@@ -35,7 +35,9 @@ namespace RiMCP.Command
         private static readonly Type[] PlayerWindows =
         {
             typeof(Dialog_FileList), typeof(Dialog_Options), typeof(Dialog_ModSettings), typeof(MainTabWindow), typeof(Page),
-            typeof(Dialog_Trade), typeof(Dialog_FormCaravan), typeof(Dialog_BillConfig)
+            typeof(Dialog_Trade), typeof(Dialog_FormCaravan), typeof(Dialog_BillConfig),
+            // A ritual's begin window, such as the gravship launch's: only the player begins a ritual.
+            typeof(Dialog_BeginRitual)
         };
 
         public static BridgeResponse ListDialogs(BridgeRequest request, RouteMatch route)
@@ -199,7 +201,8 @@ namespace RiMCP.Command
                     string player = asking == null ? PlayerOnly(window, below) : null;
                     unsupported.Add(Unsupported(window, Dto.Field("canDismiss", asking == null && DismissRefusal(window, below) == null),
                         Dto.Field("heldBy", asking == null ? null : asking.Id + " (" + asking.Tool + ")"),
-                        Dto.Field("reason", player)));
+                        Dto.Field("reason", player),
+                        Dto.Field("launch", GravshipLaunchWindow.Read(window))));
                 }
                 catch (Exception ex)
                 {

@@ -59,6 +59,43 @@ namespace RiMCP.Command
             return missing.ToArray();
         }
 
+        // Why use_gizmo does not press the console's "Launch..." button, and what to use instead; null for
+        // any other button.
+        public static string ButtonReason(Verse.Command command)
+        {
+            Command_Ritual ritual = command as Command_Ritual;
+            return ritual == null || LaunchRitual == null ? null : LaunchReason(LaunchRitual.GetValue(ritual) as Precept_Ritual);
+        }
+
+        // The same, for the ritual a button begins.
+        public static string LaunchReason(Precept_Ritual ritual)
+        {
+            if (!(ritual is Precept_GravshipLaunch))
+            {
+                return null;
+            }
+            return "It opens the Gravship launch window, which only the player can begin; prepare_gravship_launch opens it already filled.";
+        }
+
+        // list_dialogs' description of an open Gravship launch window, or null for any other window or
+        // when it cannot be read (the window is then listed without it).
+        public static object Read(Window window)
+        {
+            Dialog_BeginGravshipLaunch launch = window as Dialog_BeginGravshipLaunch;
+            if (launch == null || Missing().Length > 0)
+            {
+                return null;
+            }
+            try
+            {
+                return Describe(launch);
+            }
+            catch (Exception ex)
+            {
+                return Dto.Obj(Dto.Field("error", "The window could not be read: " + ex.Message));
+            }
+        }
+
         public static Dialog_BeginGravshipLaunch Open()
         {
             WindowStack stack = Find.WindowStack;
