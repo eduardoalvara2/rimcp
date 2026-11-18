@@ -252,7 +252,9 @@ namespace RiMCP.Command
                 {
                     continue;
                 }
-                gizmos.Add(new GizmoEntry { Id = (gizmos.Count + 1).ToString(), Command = command, Kind = Kind(command), Origin = GameActions.ForButton(command) });
+                ActionOrigin origin = GameActions.ForButton(command);
+                origin.Unsupported = GravshipLaunchWindow.ButtonReason(command) ?? origin.Unsupported;
+                gizmos.Add(new GizmoEntry { Id = (gizmos.Count + 1).ToString(), Command = command, Kind = Kind(command), Origin = origin });
             }
             foreach (GizmoEntry entry in gizmos.Where(each => each.Kind == "target" && each.Origin.Unsupported == null))
             {

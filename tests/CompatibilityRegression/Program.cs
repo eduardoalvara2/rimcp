@@ -230,13 +230,15 @@ internal static class Program
         {
             IEnumerable tools = (IEnumerable)mod.GetType("RiMCP.Shared.ToolManifest", true).GetProperty("McpTools", Static).GetValue(null);
             Dictionary<string, int> counts = tools.Cast<object>().GroupBy(tool => Field<string>(tool, "Group") ?? "(none)").ToDictionary(group => group.Key, group => group.Count());
-            var expected = new Dictionary<string, int> { { "observe", 46 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 5 }, { "pawnControl", 5 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
+            var expected = new Dictionary<string, int> { { "observe", 46 }, { "diagnostics", 4 }, { "time", 2 }, { "administration", 13 }, { "orders", 5 }, { "pawnControl", 6 }, { "decisions", 3 }, { "gameSettings", 2 }, { "gameSetup", 14 } };
             int count;
             Check(counts.Count == expected.Count && expected.All(pair => counts.TryGetValue(pair.Key, out count) && count == pair.Value),
                 "group sizes: " + string.Join(", ", counts.Select(pair => pair.Key + "=" + pair.Value).ToArray()));
         });
         Test("the dialog, surgery, and mechanitor tools reach their handlers on their routes and groups", CheckForkTools);
         Test("the chat tools are declared and validated, the log keeps its order, and a waiting read returns when the player writes", CheckChat);
+        Test("prepare_gravship_launch is declared and validated, finds what it reads in the game, and never reaches the window's Begin", CheckGravshipLaunch);
+        Test("the launch window is the player's to begin, and list_gizmos and list_dialogs say so", CheckGravshipLaunchListings);
         Test("game dialogs are answered under dismiss_dialog's access, and dismiss_dialog closes only listed windows", CheckGameDialogs);
         Test("surgery and mech commands refuse bad input and a missing map before anything changes", CheckForkRefusals);
         Test("only windows the game opened on its own are the agents' to answer or close", CheckWindowClassification);
@@ -2912,6 +2914,185 @@ internal static class Program
     private static T Blank<T>()
     {
         return (T)FormatterServices.GetUninitializedObject(typeof(T));
+    }
+
+    // prepare_gravship_launch: declared and validated, built on the game's own window, and, above all,
+    // unable to begin the launch.
+    private static void CheckGravshipLaunch()
+    {
+        const string Service = "RiMCP.Command.GravshipLaunchService";
+        object spec = Tool("prepare_gravship_launch");
+        Check(Field<string>(spec, "HandlerId") == "prepare-gravship-launch" && Field<string>(spec, "Group") == "pawnControl" && Field<string>(spec, "Method") == "POST"
+            && Field<string>(spec, "PathTemplate") == "/v1/things/{thingId}/gravship-launch", "prepare_gravship_launch is a POST on the console's gravship-launch route, in pawn control");
+        IDictionary handlers = (IDictionary)mod.GetType("RiMCP.Bridge.BridgeRouter", true).GetField("Handlers", Static).GetValue(null);
+        Delegate handler = handlers["prepare-gravship-launch"] as Delegate;
+        Check(handler != null && handler.Method.DeclaringType.Name + "." + handler.Method.Name == "GravshipLaunchService.Prepare", "prepare_gravship_launch is handled by GravshipLaunchService.Prepare");
+        string[] bodyKeys = Field<string[]>(spec, "BodyKeys");
+        Check(bodyKeys.Take(8).SequenceEqual(new[] { "mapId", "pilotId", "copilotId", "crewIds", "forceVisitorsToLeave", "boardColonyAnimals", "boardColonyMechanoids", "requestId" }) && bodyKeys.Contains("expectedLoadId") && !bodyKeys.Contains("thingId"), "the body carries the seats, the checkboxes and the retry id, guarded by the load id, and not the console, which is in the path: " + string.Join(",", bodyKeys));
+        Dictionary<string, object> schema = Field<Dictionary<string, object>>(spec, "InputSchema");
+        Check(((string[])schema["required"]).SequenceEqual(new[] { "thingId", "pilotId" }), "the console and a pilot are the required fields");
+        Dictionary<string, object> properties = ToolProperties(spec);
+        Check(new[] { "thingId", "pilotId", "copilotId", "crewIds", "forceVisitorsToLeave", "boardColonyAnimals", "boardColonyMechanoids" }.All(properties.ContainsKey), "every input is in the schema");
+        Check((string)((Dictionary<string, object>)properties["crewIds"])["type"] == "array" && (string)((Dictionary<string, object>)properties["boardColonyAnimals"])["type"] == "boolean", "crewIds is a list and the checkboxes are booleans");
+        Check((bool)Field<Dictionary<string, object>>(spec, "Annotations")["readOnlyHint"] == false, "it is a command");
+        string description = Field<string>(spec, "Description");
+        Check(description.Contains("NEVER BEGINS THE LAUNCH") && description.Contains("Begin") && description.Contains("already open"), "the description says it never begins the launch, and what it does with an open window");
+
+        // Refused before anything touches the game.
+        Action<string> prepare = body => Invoke(Service, "Prepare", Request("/v1/things/Thing_1/gravship-launch", "POST", body), Route("thingId", "Thing_1"));
+        ExpectCommandError(400, () => prepare("{}"));
+        ExpectCommandError(400, () => prepare("{\"pilotId\":\"  \"}"));
+        ExpectCommandError(400, () => prepare("{\"pilotId\":\"Human1\",\"copilotId\":\"Human1\"}"));
+        ExpectCommandError(400, () => prepare("{\"pilotId\":\"Human1\",\"crewIds\":[\"Human2\",\"Human2\"]}"));
+        ExpectCommandError(400, () => prepare("{\"pilotId\":\"Human1\",\"crewIds\":[\"Human2\",\"\"]}"));
+        ExpectCommandError(400, () => prepare("{\"pilotId\":\"Human1\",\"crewIds\":\"Human2\"}"));
+        ExpectCommandError(409, () => prepare("{\"pilotId\":\"Human1\",\"crewIds\":[\"Human2\"]}"));
+
+        // Everything the tool reads or sets on the game's window is there in this game version.
+        Check(((string[])mod.GetType("RiMCP.Command.GravshipLaunchWindow", true).GetMethod("Missing", Static).Invoke(null, null)).Length == 0, "the window's assignments, checkboxes, blocking issues, quality factors and the button's ritual are found by name");
+
+        // The launch is the player's: nothing in the tool's code may reach the window's Start (its
+        // Begin button and Enter key), the ritual's action callback, the ritual itself, or the takeoff.
+        string[] forbiddenNames = { "Start", "OnAcceptKeyPressed", "TryExecuteOn", "InitiateTakeoff", "StartChoosingDestination", "StartChoosingDestination_NewTemp", "DoButtonRow", "InnerStart", "action", "ConsumeFuel", "Notify_PressedAccept", "PreLaunchConfirmation" };
+        const BindingFlags All = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        List<string> reached = new List<string>();
+        foreach (string typeName in new[] { Service, "RiMCP.Command.GravshipLaunchWindow" })
+        {
+            foreach (Type type in WithNested(mod.GetType(typeName, true)))
+            {
+                foreach (MethodBase method in type.GetMethods(All).Cast<MethodBase>().Concat(type.GetConstructors(All)))
+                {
+                    foreach (object touched in Touched(method))
+                    {
+                        string name = touched is string ? (string)touched : ((MemberInfo)touched).Name;
+                        Type owner = touched is MemberInfo ? ((MemberInfo)touched).DeclaringType : null;
+                        bool forbidden = forbiddenNames.Contains(name) && (owner == null || owner.Assembly != mod)
+                            || owner != null && (typeof(RitualBehaviorWorker).IsAssignableFrom(owner) || typeof(LordJob_Ritual).IsAssignableFrom(owner) || owner == typeof(Building_GravEngine) || owner == typeof(Dialog_BeginRitual.ActionCallback));
+                        if (forbidden)
+                        {
+                            reached.Add(type.Name + "." + method.Name + " reaches " + (owner == null ? "\"" + name + "\"" : owner.Name + "." + name));
+                        }
+                    }
+                }
+            }
+        }
+        Check(reached.Count == 0, "the tool must never begin the launch: " + string.Join("; ", reached.ToArray()));
+
+        // Enter reaches Begin through WindowStack.Notify_PressedAccept, which asks closeOnAccept and
+        // forceCatchAcceptAndCancelEventEvenIfUnfocused, so the tool must turn both off on its window.
+        List<string> stored = WithNested(mod.GetType(Service, true))
+            .SelectMany(type => type.GetMethods(All).Cast<MethodBase>()).SelectMany(Touched).OfType<FieldInfo>().Select(field => field.Name).ToList();
+        Check(stored.Contains("closeOnAccept") && stored.Contains("forceCatchAcceptAndCancelEventEvenIfUnfocused"), "the tool turns off the window's Enter key (closeOnAccept) on the window it opens");
+        Check(Field<string>(spec, "Description").Contains("by mouse only") && Field<string>(spec, "Description").Contains("crewIds"), "the description says Begin is by mouse only and what an omitted crewIds does");
+
+        // The scan itself sees such a call, so it would catch one.
+        MethodInfo sample = typeof(BeginProbe).GetMethod("Begins", BindingFlags.Static | BindingFlags.Public);
+        Check(Touched(sample).OfType<MemberInfo>().Any(member => member.Name == "OnAcceptKeyPressed"), "the scan sees a call to a window's accept key handler");
+    }
+
+    // Only for the scan's own check: the kind of call the tool must never make.
+    private static class BeginProbe
+    {
+        public static void Begins(Window window)
+        {
+            window.OnAcceptKeyPressed();
+        }
+    }
+
+    private static IEnumerable<Type> WithNested(Type type)
+    {
+        yield return type;
+        foreach (Type nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            foreach (Type inner in WithNested(nested))
+            {
+                yield return inner;
+            }
+        }
+    }
+
+    // Every method, field and string a method's code names, read from its IL, so a call is found
+    // whether written out, run in a lambda, or looked up by name.
+    private static IEnumerable<object> Touched(MethodBase method)
+    {
+        MethodBody body = method.GetMethodBody();
+        if (body == null)
+        {
+            yield break;
+        }
+        byte[] il = body.GetILAsByteArray();
+        Module module = method.Module;
+        Type[] typeArguments = method.DeclaringType.IsGenericType ? method.DeclaringType.GetGenericArguments() : null;
+        Dictionary<ushort, System.Reflection.Emit.OpCode> codes = typeof(System.Reflection.Emit.OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Select(field => (System.Reflection.Emit.OpCode)field.GetValue(null)).ToDictionary(code => unchecked((ushort)code.Value));
+        int at = 0;
+        while (at < il.Length)
+        {
+            ushort value = il[at++];
+            if (value == 0xFE)
+            {
+                value = (ushort)(0xFE00 | il[at++]);
+            }
+            System.Reflection.Emit.OpCode code = codes[value];
+            int size;
+            switch (code.OperandType)
+            {
+                case System.Reflection.Emit.OperandType.InlineNone: size = 0; break;
+                case System.Reflection.Emit.OperandType.ShortInlineBrTarget:
+                case System.Reflection.Emit.OperandType.ShortInlineI:
+                case System.Reflection.Emit.OperandType.ShortInlineVar: size = 1; break;
+                case System.Reflection.Emit.OperandType.InlineVar: size = 2; break;
+                case System.Reflection.Emit.OperandType.InlineI8:
+                case System.Reflection.Emit.OperandType.InlineR: size = 8; break;
+                case System.Reflection.Emit.OperandType.InlineSwitch: size = 4 + 4 * BitConverter.ToInt32(il, at); break;
+                default: size = 4; break;
+            }
+            int token = size == 4 ? BitConverter.ToInt32(il, at) : 0;
+            if (code.OperandType == System.Reflection.Emit.OperandType.InlineMethod || code.OperandType == System.Reflection.Emit.OperandType.InlineField)
+            {
+                MemberInfo member = null;
+                try
+                {
+                    member = code.OperandType == System.Reflection.Emit.OperandType.InlineMethod ? (MemberInfo)module.ResolveMethod(token, typeArguments, null) : module.ResolveField(token, typeArguments, null);
+                }
+                catch (ArgumentException)
+                {
+                }
+                if (member != null)
+                {
+                    yield return member;
+                }
+            }
+            else if (code.OperandType == System.Reflection.Emit.OperandType.InlineString)
+            {
+                yield return module.ResolveString(token);
+            }
+            at += size;
+        }
+    }
+
+    // The launch window is the player's to begin: list_gizmos refuses its button for use_gizmo and
+    // names the tool to use, and list_dialogs lists an open one as the player's, never dismissable.
+    private static void CheckGravshipLaunchListings()
+    {
+        Type window = mod.GetType("RiMCP.Command.GravshipLaunchWindow", true);
+        // A Command_Ritual cannot be made without the game (its textures load with the type), so the judgment on
+        // the ritual a button begins is checked, and that a plain button gets none.
+        Func<Precept_Ritual, string> buttonReason = ritual => (string)window.GetMethod("LaunchReason", Static).Invoke(null, new object[] { ritual });
+        string reason = buttonReason((Precept_Ritual)FormatterServices.GetUninitializedObject(typeof(Precept_GravshipLaunch)));
+        Check(reason != null && reason.Contains("prepare_gravship_launch") && reason.Contains("player"), "the Launch... button is refused for use_gizmo, naming the tool that opens the window: " + reason);
+        Check(buttonReason((Precept_Ritual)FormatterServices.GetUninitializedObject(typeof(Precept_Ritual))) == null && window.GetMethod("ButtonReason", Static).Invoke(null, new object[] { new Command_Action() }) == null, "another ritual's button and a plain button are judged as before");
+        Check(window.GetMethod("Read", Static).Invoke(null, new object[] { Blank<Dialog_NodeTree>() }) == null, "a window that is not the launch window is described as before");
+
+        Type service = mod.GetType("RiMCP.Command.DialogService", true);
+        Dialog_BeginGravshipLaunch open = Blank<Dialog_BeginGravshipLaunch>();
+        open.forcePause = true;
+        Window[] none = new Window[0];
+        string player = (string)service.GetMethod("PlayerOnly", Static).Invoke(null, new object[] { open, none });
+        Check(player != null && player.Contains("Dialog_BeginGravshipLaunch"), "an open launch window is the player's, whoever opened it: " + player);
+        string refusal = (string)service.GetMethod("DismissRefusal", Static).Invoke(null, new object[] { open, none });
+        Check(refusal != null && refusal.Contains("player's to finish"), "dismiss_dialog never closes it: " + refusal);
+        Check(Field<string>(Tool("list_dialogs"), "Description").Contains("prepare_gravship_launch"), "list_dialogs' description says it describes the launch window");
     }
 
     private static object Tool(string name)

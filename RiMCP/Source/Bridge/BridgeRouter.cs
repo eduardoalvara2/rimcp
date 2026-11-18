@@ -72,6 +72,7 @@ namespace RiMCP.Bridge
             { "gizmos", GizmoService.ListGizmos },
             { "set-building-toggle", GizmoService.SetBuildingToggle },
             { "use-gizmo", GizmoService.UseGizmo },
+            { "prepare-gravship-launch", GravshipLaunchService.Prepare },
             { "mechanitor", MechanitorService.GetMechanitor },
             { "set-mech-control", MechanitorService.SetMechControl },
             { "buildings", BuildingReadService.ListBuildings },
