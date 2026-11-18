@@ -61,7 +61,8 @@ namespace RiMCP.Chat
             }
             if (wait == 0)
             {
-                return Reply(after);
+                // A plain read (an agent's first look at the log) does not count as taking a message.
+                return Reply(after, false);
             }
             // The bridge waits off the main thread, so the game keeps running, then asks for the
             // reply again: it holds whatever arrived meanwhile.
@@ -70,13 +71,13 @@ namespace RiMCP.Chat
             bool deferred = false;
             try
             {
-                BridgeResponse response = Reply(after);
+                BridgeResponse response = Reply(after, true);
                 if (!waiter.Done.IsSet)
                 {
                     response.Deferred = new DeferredReply(waiter.Done, wait, () =>
                     {
                         ChatLog.Release(waiter);
-                        return Reply(after);
+                        return Reply(after, true);
                     });
                     deferred = true;
                 }
@@ -91,12 +92,22 @@ namespace RiMCP.Chat
             }
         }
 
-        private static BridgeResponse Reply(int after)
+        // deliver: a waiting reader (the agent's listener) takes the player entries it is handed, so
+        // the window can show the assistant thinking about them.
+        private static BridgeResponse Reply(int after, bool deliver)
         {
             ReadContext context = new ReadContext(new ReadRequest(), null);
             int last;
             bool reset;
             ChatEntry[] entries = ChatLog.Read(after, out last, out reset);
+            if (deliver)
+            {
+                int newestPlayer = entries.Where(entry => entry.From == ChatSender.Player).Select(entry => entry.Id).DefaultIfEmpty(0).Max();
+                if (newestPlayer > 0)
+                {
+                    ChatLog.MarkDelivered(newestPlayer);
+                }
+            }
             return ReadEnvelope.Ok(context, Dto.Obj(
                 Dto.Field("messages", entries.Select(entry => (object)entry.ToDto()).ToArray()),
                 Dto.Field("lastId", last),

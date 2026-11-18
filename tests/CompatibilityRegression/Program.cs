@@ -1393,6 +1393,19 @@ internal static class Program
             Dictionary<string, object> woke = Data(Json.Deserialize<Dictionary<string, object>>(BodyOf(finished)));
             Check(((IEnumerable)woke["messages"]).Cast<Dictionary<string, object>>().Select(m => (string)m["text"]).SequenceEqual(new[] { "still no player", "here I am" }), "the rebuilt reply holds what arrived while waiting");
 
+            // The window's thinking state: a plain read does not take a message, a waiting read does,
+            // and an assistant answer ends it.
+            MethodInfo pendingId = log.GetMethod("PendingPlayerId", Static);
+            MethodInfo isDelivered = log.GetMethod("IsDelivered", Static);
+            Func<int, bool> deliveredFor = id => (bool)isDelivered.Invoke(null, new object[] { id, null });
+            int asked = idOf(add("player", "are you there?"));
+            Check((int)pendingId.Invoke(null, null) == asked, "the player's last unanswered entry is pending");
+            read("/v1/chat/messages?after=0");
+            Check(!deliveredFor(asked), "a read without a wait does not mark the entry as taken");
+            Check(Field<object>(Invoke(Service, "GetChat", Request("/v1/chat/messages?after=" + (asked - 1) + "&waitSeconds=5"), Route()), "Deferred") == null && deliveredFor(asked), "a waiting read that hands the entry over marks it taken");
+            add("assistant", "yes");
+            Check((int)pendingId.Invoke(null, null) == 0, "an assistant entry after it ends the pending state");
+
             // The log keeps the newest few hundred, and ids keep counting.
             for (int i = 0; i < 350; i++) add("assistant", "filler " + i);
             Dictionary<string, object> capped = read("/v1/chat/messages");
