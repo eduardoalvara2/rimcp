@@ -2953,7 +2953,7 @@ internal static class Program
 
         // The launch is the player's: nothing in the tool's code may reach the window's Start (its
         // Begin button and Enter key), the ritual's action callback, the ritual itself, or the takeoff.
-        string[] forbiddenNames = { "Start", "OnAcceptKeyPressed", "TryExecuteOn", "InitiateTakeoff", "StartChoosingDestination", "StartChoosingDestination_NewTemp", "DoButtonRow", "InnerStart", "action", "ConsumeFuel" };
+        string[] forbiddenNames = { "Start", "OnAcceptKeyPressed", "TryExecuteOn", "InitiateTakeoff", "StartChoosingDestination", "StartChoosingDestination_NewTemp", "DoButtonRow", "InnerStart", "action", "ConsumeFuel", "Notify_PressedAccept", "PreLaunchConfirmation" };
         const BindingFlags All = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
         List<string> reached = new List<string>();
         foreach (string typeName in new[] { Service, "RiMCP.Command.GravshipLaunchWindow" })
@@ -2977,6 +2977,13 @@ internal static class Program
             }
         }
         Check(reached.Count == 0, "the tool must never begin the launch: " + string.Join("; ", reached.ToArray()));
+
+        // Enter reaches Begin through WindowStack.Notify_PressedAccept, which asks closeOnAccept and
+        // forceCatchAcceptAndCancelEventEvenIfUnfocused, so the tool must turn both off on its window.
+        List<string> stored = WithNested(mod.GetType(Service, true))
+            .SelectMany(type => type.GetMethods(All).Cast<MethodBase>()).SelectMany(Touched).OfType<FieldInfo>().Select(field => field.Name).ToList();
+        Check(stored.Contains("closeOnAccept") && stored.Contains("forceCatchAcceptAndCancelEventEvenIfUnfocused"), "the tool turns off the window's Enter key (closeOnAccept) on the window it opens");
+        Check(Field<string>(spec, "Description").Contains("by mouse only") && Field<string>(spec, "Description").Contains("crewIds"), "the description says Begin is by mouse only and what an omitted crewIds does");
 
         // The scan itself sees such a call, so it would catch one.
         MethodInfo sample = typeof(BeginProbe).GetMethod("Begins", BindingFlags.Static | BindingFlags.Public);

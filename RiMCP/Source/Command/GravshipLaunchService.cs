@@ -23,8 +23,9 @@ namespace RiMCP.Command
             {
                 throw new CommandException(400, "Missing required field 'pilotId'.");
             }
-            List<string> crewIds = (body.CrewIds ?? new List<string>()).Select(id => id == null ? "" : id.Trim()).ToList();
-            if (crewIds.Any(id => id.Length == 0))
+            // Left out, the crew stays what the game's own auto-fill chose; an empty list means nobody else.
+            List<string> crewIds = body.CrewIds == null ? null : body.CrewIds.Select(id => id == null ? "" : id.Trim()).ToList();
+            if (crewIds != null && crewIds.Any(id => id.Length == 0))
             {
                 throw new CommandException(400, "Field 'crewIds' must hold pawn ids only.");
             }
@@ -33,7 +34,7 @@ namespace RiMCP.Command
             RequireEach(pilotId, copilotId, crewIds);
             CommandContext context = CommandUtil.ContextFor(body.MapId);
             CommandUtil.RequireCurrentMap(context);
-            RequestKey key = RequestKey.For("prepare_gravship_launch", requestId, context.Map, route["thingId"], pilotId, copilotId, string.Join(",", crewIds.ToArray()),
+            RequestKey key = RequestKey.For("prepare_gravship_launch", requestId, context.Map, route["thingId"], pilotId, copilotId, crewIds == null ? "-" : string.Join(",", crewIds.ToArray()),
                 body.ForceVisitorsToLeave, body.BoardColonyAnimals, body.BoardColonyMechanoids);
             return CommandReceipts.Once(context, key, () => Run(context.Map, route["thingId"], pilotId, copilotId, crewIds, body));
         }
@@ -46,7 +47,10 @@ namespace RiMCP.Command
             {
                 given.Add(copilotId);
             }
-            given.AddRange(crewIds);
+            if (crewIds != null)
+            {
+                given.AddRange(crewIds);
+            }
             string twice = given.GroupBy(id => id).Where(group => group.Count() > 1).Select(group => group.Key).FirstOrDefault();
             if (twice != null)
             {
@@ -84,6 +88,25 @@ namespace RiMCP.Command
                 throw new CommandException(409, "The player is choosing a target in game; try again when they finish.");
             }
 
+            // The same pawn under two id forms (ThingID and load id) is one pawn, so seats are compared as pawns.
+            Pawn pilot = Resolve(map, pilotId);
+            Pawn copilot = copilotId == null ? null : Resolve(map, copilotId);
+            List<Pawn> crew = crewIds == null ? null : crewIds.Select(id => Resolve(map, id)).ToList();
+            List<Pawn> seated = new List<Pawn> { pilot };
+            if (copilot != null)
+            {
+                seated.Add(copilot);
+            }
+            if (crew != null)
+            {
+                seated.AddRange(crew);
+            }
+            Pawn same = seated.GroupBy(pawn => pawn).Where(group => group.Count() > 1).Select(group => group.Key).FirstOrDefault();
+            if (same != null)
+            {
+                throw new CommandException(400, ReadUtil.PawnName(same) + " is given more than one place (under different ids); a pawn is the pilot, the copilot, or crew.");
+            }
+
             Command_Ritual button = Button(console);
             if (button.Disabled)
             {
@@ -91,15 +114,32 @@ namespace RiMCP.Command
             }
 
             // The player's click on "Launch...": it opens the window, which fills itself as it opens.
-            button.ProcessInput(new UnityEngine.Event());
+            try
+            {
+                button.ProcessInput(new UnityEngine.Event());
+            }
+            catch
+            {
+                // If the window was added and then failed to open or fill itself, none is left behind.
+                foreach (Window opened in Find.WindowStack.Windows.Where(each => each is Dialog_BeginRitual).ToList())
+                {
+                    Close(opened);
+                }
+                throw;
+            }
             Dialog_BeginGravshipLaunch window = GravshipLaunchWindow.Open();
             if (window == null)
             {
                 throw new CommandException(409, "The game did not open the Gravship launch window.");
             }
+            // Enter reaches the window's Begin through WindowStack.Notify_PressedAccept, which asks a window's
+            // closeOnAccept (or forceCatchAcceptAndCancelEventEvenIfUnfocused); with both off, Enter does
+            // nothing here, so a launch begins only with the mouse on the Begin button.
+            window.closeOnAccept = false;
+            window.forceCatchAcceptAndCancelEventEvenIfUnfocused = false;
             try
             {
-                Fill(map, window, pilotId, copilotId, crewIds, body);
+                Fill(window, pilot, copilot, crew, body);
             }
             catch
             {
@@ -111,7 +151,7 @@ namespace RiMCP.Command
             return new CommandResult(true, Dto.Obj(
                 Dto.Field("console", SummaryDto.Thing(console)),
                 Dto.Field("window", described),
-                Dto.Field("note", "The window is open and paused over the game, filled. Nothing has begun: the player presses Begin (or Cancel) in game.")));
+                Dto.Field("note", "The window is open and paused over the game, filled. Nothing has begun: the player presses Begin (or Cancel) in game. On a window opened by this tool Begin is by mouse only: the Enter key is turned off, so typing in the chat cannot begin the launch.")));
         }
 
         // The console's own "Launch..." button, as the game builds it with the console selected.
@@ -135,7 +175,7 @@ namespace RiMCP.Command
 
         // The window's own role assignments and its own rules decide, in two passes: every seat is
         // checked first and the assignments are changed only if all are allowed.
-        private static void Fill(Map map, Dialog_BeginGravshipLaunch window, string pilotId, string copilotId, List<string> crewIds, PrepareBody body)
+        private static void Fill(Dialog_BeginGravshipLaunch window, Pawn pilotPawn, Pawn copilotPawn, List<Pawn> crewPawns, PrepareBody body)
         {
             RitualRoleAssignments assignments = GravshipLaunchWindow.AssignmentsOf(window);
             TargetInfo target = GravshipLaunchWindow.TargetOf(window);
@@ -150,24 +190,45 @@ namespace RiMCP.Command
                 throw new CommandException(409, "The window has no mechanoid checkbox without Biotech.");
             }
 
-            Pawn pilot = Seat(map, assignments, pilotId, pilotRole, "the pilot");
-            Pawn copilot = copilotId == null ? null : Seat(map, assignments, copilotId, copilotRole, "the copilot");
-            List<Pawn> crew = crewIds.Select(id => Seat(map, assignments, id, null, "crew")).ToList();
+            Pawn pilot = Seat(assignments, pilotPawn, pilotRole, "the pilot");
+            Pawn copilot = copilotPawn == null ? null : Seat(assignments, copilotPawn, copilotRole, "the copilot");
+            List<Pawn> crew = crewPawns == null ? null : crewPawns.Select(pawn => Seat(assignments, pawn, null, "crew")).ToList();
 
-            // Everyone else goes to "Not participating", as dragging them there does: the window's
-            // own list of candidates, taken out of every role and out of the crew.
-            foreach (Pawn pawn in assignments.AllCandidatePawns.ToList())
+            if (crew != null)
             {
-                assignments.RemoveParticipant(pawn);
+                // Everyone else goes to "Not participating", as dragging them there does: the window's
+                // own list of candidates, taken out of every role and out of the crew.
+                foreach (Pawn pawn in assignments.AllCandidatePawns.ToList())
+                {
+                    assignments.RemoveParticipant(pawn);
+                }
+            }
+            else
+            {
+                // The game's own auto-fill keeps the crew it chose; whoever held a seat the tool takes goes
+                // back to the crew, or out if the game will not have them there.
+                Vacate(assignments, pilotRole, pilot);
+                if (copilot != null)
+                {
+                    Vacate(assignments, copilotRole, copilot);
+                }
             }
             Place(assignments, pilot, pilotRole, "the pilot");
             if (copilot != null)
             {
                 Place(assignments, copilot, copilotRole, "the copilot");
             }
-            foreach (Pawn member in crew)
+            if (crew != null)
             {
-                Place(assignments, member, null, "crew");
+                foreach (Pawn member in crew)
+                {
+                    Place(assignments, member, null, "crew");
+                }
+            }
+            // The seats really hold who was asked for, or nothing is offered.
+            if (assignments.RoleForPawn(pilot) != pilotRole || copilot != null && assignments.RoleForPawn(copilot) != copilotRole)
+            {
+                throw new CommandException(409, "The game did not seat " + ReadUtil.PawnName(assignments.RoleForPawn(pilot) != pilotRole ? pilot : copilot) + " as asked.");
             }
             // The window's quality panel listens for changes, as it does after a drag.
             object drawer = GravshipLaunchWindow.Drawer.GetValue(window);
@@ -193,13 +254,30 @@ namespace RiMCP.Command
 
         // The pawn, checked as the game checks it for the seat (null is crew): it must be one the
         // window offers, and the game's own reason is given when it cannot take the seat.
-        private static Pawn Seat(Map map, RitualRoleAssignments assignments, string pawnId, RitualRole role, string seat)
+        private static Pawn Resolve(Map map, string pawnId)
         {
             Pawn pawn = PawnReadService.FindPawn(map, pawnId);
             if (pawn == null)
             {
                 throw CommandUtil.PawnNotFound(map, pawnId);
             }
+            return pawn;
+        }
+
+        // Those in a seat, other than the pawn to take it, leave it for the crew.
+        private static void Vacate(RitualRoleAssignments assignments, RitualRole role, Pawn incoming)
+        {
+            foreach (Pawn holder in assignments.AssignedPawns(role).Where(pawn => pawn != incoming).ToList())
+            {
+                if (!assignments.TryAssignSpectate(holder))
+                {
+                    assignments.RemoveParticipant(holder);
+                }
+            }
+        }
+
+        private static Pawn Seat(RitualRoleAssignments assignments, Pawn pawn, RitualRole role, string seat)
+        {
             string name = ReadUtil.PawnName(pawn);
             string reason = assignments.PawnNotAssignableReason(pawn, role);
             if (reason != null)
