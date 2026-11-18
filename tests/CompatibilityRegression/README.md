@@ -44,6 +44,11 @@ The ninety-four checks cover:
   than the archive keeps, one culled before the watch saw it, flag a gap for a reader caught
   up before them (and only because of the unseen one); and a reader caught up after them is
   not told again while nothing changes.
+- `prepare_gravship_launch`: declared in pawn control on the console's route with its handler and inputs, refused before
+  the game is touched for a missing pilot, a pawn in two places or a bad crew list, every game member it reads or sets on
+  the launch window found by name, and the tool's compiled code read to show it never reaches the window's Start, the
+  Enter key handler, the ritual's action callback, the ritual or the takeoff. The Launch... button is refused for
+  `use_gizmo` naming the tool, and an open launch window is the player's, never dismissed.
 - The chat tools: `send_message` and `get_chat` on their routes in the Observe group with their handlers, ids counting
   up, blank, missing and oversized text refused, entries after an id, a wait that returns at once for a player entry already
   there and otherwise ends only when the player (not the assistant) writes, and the log keeping the newest 300 entries.
