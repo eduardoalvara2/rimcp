@@ -211,7 +211,7 @@ namespace RiMCP.UI
         }
 
         // Top right of the title row, while the player's last message has no answer: "sent" until the
-        // agent takes it, then a pulsing crescent and an animated "thinking" until its answer arrives.
+        // agent takes it, then three twinkling stars until its answer arrives.
         private static void DrawStatus(Rect rect)
         {
             int pending = ChatLog.PendingPlayerId();
@@ -227,7 +227,7 @@ namespace RiMCP.UI
             float right = rect.xMax;
             if (thinking)
             {
-                // A breathing crescent and three stars twinkling in a wave, bobbing a little.
+                // Three stars twinkling in a wave, bobbing a little.
                 float t = Time.realtimeSinceStartup;
                 for (int i = Stars - 1; i >= 0; i--)
                 {
@@ -238,10 +238,6 @@ namespace RiMCP.UI
                     float bob = -2.5f * glow;
                     Widgets.Label(new Rect(right - StarWidth * (Stars - i), rect.y + bob, StarWidth, rect.height), Star);
                 }
-                Color moon = AssistantName;
-                moon.a = 0.6f + 0.4f * (0.5f + 0.5f * Mathf.Sin(t * 1.6f));
-                GUI.color = moon;
-                ChatIcon.Draw(new Rect(right - StarWidth * Stars - 22f, rect.y + 2f, 20f, 20f));
                 TooltipHandler.TipRegion(rect, AssistantLabel + " is thinking...");
             }
             else
